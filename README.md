@@ -6,19 +6,22 @@
 
 ```text
 Caller
-  -> Twilio Voice / SIP Trunk
+  -> Twilio Programmable Voice Number
   -> FastAPI /voice + /twilio/media
-  -> VAD utterance buffer
-  -> STT
-  -> LangChain Agent
+  -> Silero VAD utterance buffer
+  -> LangGraph SDK /runs/stream
+  -> multimodal LangChain Agent
   -> JSONL visitor store
   -> WeCom group robot webhook
   -> Guard
+  -> streamed text deltas
+  -> Kokoro-82M TTS
+  -> Twilio Media Streams audio
 ```
 
-The current implementation keeps speech adapters replaceable. Twilio Media Streams, μ-law audio framing, VAD buffering, visitor registration, and WeCom notification are implemented. Kokoro is loaded when the optional `kokoro` package is installed; otherwise the server falls back to silent placeholder audio so non-TTS paths remain testable.
+The current implementation keeps speech adapters replaceable. Twilio bidirectional Media Streams, μ-law audio framing, Silero VAD buffering, LangGraph SDK streaming, visitor registration, Kokoro-82M TTS, and WeCom notification are implemented. Caller audio is sent to the agent as a LangChain audio content block; there is no separate STT step.
 
-Code is split by responsibility: `agent` contains the LangGraph workflow, visitor domain model, registration tools, and guard notification; `voice` contains the FastAPI/Twilio transport layer, audio framing, utterance buffering, STT, and TTS adapters.
+Code is split by responsibility: `agent` contains the LangGraph workflow, visitor domain model, registration tools, and guard notification; `voice` contains the FastAPI/Twilio transport layer, audio framing, utterance buffering, LangGraph SDK client, VAD, and TTS adapters.
 
 ## Setup
 
@@ -37,18 +40,24 @@ Required environment variables:
 
 ```bash
 ANTHROPIC_API_KEY=...
-AGENT_MODEL=anthropic:claude-sonnet-4-6
+AGENT_MODEL=provider:model-with-audio-input
+LANGGRAPH_API_URL=http://127.0.0.1:2024
+LANGGRAPH_ASSISTANT_ID=agent
 PUBLIC_BASE_URL=https://your-ngrok-url
 GUARD_WECHAT_WEBHOOK=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
-OPENAI_API_KEY=...
 TTS_PROVIDER=kokoro
 KOKORO_LANG_CODE=z
-AGENT_VOICE=zf_001
+KOKORO_REPO_ID=hexgrad/Kokoro-82M
+AGENT_VOICE=zf_xiaoxiao
+VAD_PROVIDER=silero
 ```
 
-Run the voice server:
+`AGENT_MODEL` must point at a LangChain chat model/provider that accepts audio content blocks. Add that provider package if it is not already in `pyproject.toml`.
+
+Run the LangGraph server and voice server in separate terminals:
 
 ```bash
+make run
 make voice
 ```
 
@@ -58,7 +67,7 @@ Expose it to Twilio:
 ngrok http 8000
 ```
 
-Configure the Twilio number or SIP trunk voice webhook to:
+Configure the Twilio Programmable Voice Number webhook to:
 
 ```text
 POST https://your-ngrok-url/voice
