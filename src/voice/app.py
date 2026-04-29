@@ -4,19 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from twilio.twiml.voice_response import Connect, VoiceResponse
 
 from agent.config import settings
-from agent.graph import graph
-from voice.audio import UtteranceBuffer, mulaw_payload_to_pcm16, pcm16_to_mulaw_payload
-from voice.speech import OpenAISpeechToText, SpeechToText, TextToSpeech, build_tts
-
-load_dotenv()
+from voice.agent_stream import LangGraphAudioAgent
+from voice.audio import (
+    UtteranceBuffer,
+    build_vad,
+    mulaw_payload_to_pcm16,
+    pcm16_to_mulaw_payload,
+)
+from voice.speech import TextToSpeech, build_tts
 
 app = FastAPI(title="Live Voice Visitor Agent")
 
@@ -46,10 +49,17 @@ async def twilio_media(websocket: WebSocket) -> None:
     await websocket.accept()
     stream_sid = ""
     metadata: dict[str, str] = {}
-    utterances = UtteranceBuffer()
-    stt = OpenAISpeechToText(settings)
+    utterances = UtteranceBuffer(
+        vad=build_vad(
+            provider=settings.vad_provider,
+            threshold=settings.silero_vad_threshold,
+            min_silence_duration_ms=settings.silero_vad_min_silence_ms,
+        ),
+        silence_frames_to_close=5 if settings.vad_provider == "silero" else 25,
+    )
     tts = build_tts(settings)
-    transcript: list[tuple[str, str]] = []
+    agent = LangGraphAudioAgent(settings)
+    thread_id = ""
 
     try:
         while True:
@@ -59,53 +69,59 @@ async def twilio_media(websocket: WebSocket) -> None:
 
             if event_type == "start":
                 stream_sid = event["start"]["streamSid"]
-                metadata = _parse_custom_parameters(event["start"].get("customParameters", {}))
-                await _send_audio(websocket, stream_sid, await tts.synthesize_pcm16("您好，请问车牌号多少，今天找哪家公司，什么事儿？"))
+                metadata = _parse_custom_parameters(
+                    event["start"].get("customParameters", {})
+                )
+                await _send_audio(
+                    websocket,
+                    stream_sid,
+                    await tts.synthesize_pcm16(
+                        "您好，请问车牌号多少，今天找哪家公司，什么事儿？"
+                    ),
+                )
+                thread_id = await agent.create_thread(metadata)
                 continue
 
             if event_type == "media":
                 pcm16 = mulaw_payload_to_pcm16(event["media"]["payload"])
                 utterance = utterances.push(pcm16)
                 if utterance:
-                    await _handle_utterance(websocket, stream_sid, utterance, transcript, stt, tts, metadata)
+                    await _handle_utterance(
+                        websocket,
+                        stream_sid,
+                        utterance,
+                        agent,
+                        thread_id,
+                        tts,
+                        metadata,
+                    )
                 continue
 
             if event_type == "stop":
                 break
     except WebSocketDisconnect:
         return
+    finally:
+        await agent.aclose()
 
 
 async def _handle_utterance(
     websocket: WebSocket,
     stream_sid: str,
     pcm16: bytes,
-    transcript: list[tuple[str, str]],
-    stt: SpeechToText,
+    agent: LangGraphAudioAgent,
+    thread_id: str,
     tts: TextToSpeech,
     metadata: dict[str, str],
 ) -> None:
-    user_text = await stt.transcribe(pcm16)
-    if not user_text:
+    if not thread_id:
         return
 
-    transcript.append(("user", user_text))
-    result = await graph.ainvoke(
-        {
-            "messages": [
-                {
-                    "role": role,
-                    "content": content,
-                }
-                for role, content in transcript
-            ],
-            "call_sid": metadata.get("call_sid"),
-            "caller": metadata.get("caller"),
-        }
-    )
-    assistant_text = str(result["messages"][-1].content)
-    transcript.append(("assistant", assistant_text))
-    await _send_audio(websocket, stream_sid, await tts.synthesize_pcm16(assistant_text))
+    segmenter = TextDeltaSegmenter()
+    async for segment in _tts_segments(
+        agent.stream_reply_text(thread_id, pcm16, metadata), tts, segmenter
+    ):
+        await _send_audio(websocket, stream_sid, segment)
 
 
 def _parse_custom_parameters(value: object) -> dict[str, str]:
@@ -137,3 +153,59 @@ async def _send_audio(websocket: WebSocket, stream_sid: str, pcm16: bytes) -> No
             }
         )
         await asyncio.sleep(0.02)
+
+
+async def _tts_segments(
+    text_stream: AsyncIterator[str],
+    tts: TextToSpeech,
+    segmenter: "TextDeltaSegmenter",
+) -> AsyncIterator[bytes]:
+    async for delta in text_stream:
+        for text in segmenter.push(delta):
+            async for pcm16 in tts.stream_pcm16(text):
+                yield pcm16
+
+    for text in segmenter.flush():
+        async for pcm16 in tts.stream_pcm16(text):
+            yield pcm16
+
+
+class TextDeltaSegmenter:
+    def __init__(self, min_chars: int = 14, max_chars: int = 48) -> None:
+        self.min_chars = min_chars
+        self.max_chars = max_chars
+        self.buffer = ""
+
+    def push(self, delta: str) -> list[str]:
+        self.buffer += delta
+        ready: list[str] = []
+
+        while self.buffer:
+            split_at = self._split_index()
+            if split_at <= 0:
+                break
+            ready.append(self.buffer[:split_at].strip())
+            self.buffer = self.buffer[split_at:].lstrip()
+
+        return [item for item in ready if item]
+
+    def flush(self) -> list[str]:
+        text = self.buffer.strip()
+        self.buffer = ""
+        return [text] if text else []
+
+    def _split_index(self) -> int:
+        punctuation = "。！？!?；;，,"
+        for index, char in enumerate(self.buffer):
+            if char in punctuation and index + 1 >= self.min_chars:
+                return index + 1
+
+        if len(self.buffer) < self.max_chars:
+            return 0
+
+        for index in range(
+            min(len(self.buffer), self.max_chars) - 1, self.min_chars, -1
+        ):
+            if self.buffer[index].isspace():
+                return index + 1
+        return self.max_chars
