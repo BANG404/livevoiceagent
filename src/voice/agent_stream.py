@@ -39,7 +39,13 @@ def build_audio_user_message(
         "role": "user",
         "content": [
             {"type": "text", "text": "".join(context_parts)},
-            {"type": "audio", "base64": audio_b64, "mime_type": "audio/wav"},
+            {
+                "type": "input_audio",
+                "input_audio": {
+                    "data": f"data:audio/wav;base64,{audio_b64}",
+                    "format": "wav",
+                },
+            },
         ],
     }
 
