@@ -24,6 +24,7 @@ def build_system_prompt() -> str:
         "先用一句话同时询问车牌、来访公司、事由；缺什么再只追问缺失项。"
         "必须采集车牌号、来访单位、手机号、来访事由。"
         "入场时间由系统记录，不要向用户询问。"
+        "用户消息可能包含电话语音音频块；直接理解音频，不要要求系统先转文字。"
         f"当前 UTC 时间：{current_utc_time}。"
         "信息完整后立即调用 register_visitor；如果用户提供手机号或车牌号且像回访，"
         "可调用 lookup_recent_visit 辅助确认。"
@@ -78,7 +79,9 @@ def calculator(expression: str) -> str:
         if not isinstance(node, allowed_nodes):
             raise ValueError("Expression contains unsupported syntax")
 
-    result: Any = eval(compile(parsed, "<calculator>", "eval"), {"__builtins__": {}}, {})
+    result: Any = eval(
+        compile(parsed, "<calculator>", "eval"), {"__builtins__": {}}, {}
+    )
     return str(result)
 
 
@@ -108,7 +111,9 @@ async def register_visitor(
 
 
 @tool
-def lookup_recent_visit(phone: str | None = None, plate_number: str | None = None) -> str:
+def lookup_recent_visit(
+    phone: str | None = None, plate_number: str | None = None
+) -> str:
     """Look up the most recent visit by phone or plate_number for repeat visitors."""
     phone = phone.strip() if phone else None
     plate_number = plate_number.strip() if plate_number else None
