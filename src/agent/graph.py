@@ -15,6 +15,7 @@ from langchain_core.tools import tool
 from agent.config import settings
 from agent.domain import VisitorRegistration, VisitorStore
 from agent.guard_notify import WeComWebhookNotifier
+from agent.models import build_agent_model
 
 
 def build_system_prompt() -> str:
@@ -130,7 +131,7 @@ def lookup_recent_visit(
 
 
 graph = create_agent(
-    model=settings.agent_model,
+    model=build_agent_model(settings),
     tools=[calculator, register_visitor, lookup_recent_visit],
     middleware=[CurrentUtcPromptMiddleware()],
     name="agent",

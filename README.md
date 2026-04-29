@@ -19,7 +19,7 @@ Caller
   -> Twilio Media Streams audio
 ```
 
-The current implementation keeps speech adapters replaceable. Twilio bidirectional Media Streams, μ-law audio framing, Silero VAD buffering, LangGraph SDK streaming, visitor registration, Kokoro-82M TTS, and WeCom notification are implemented. Caller audio is sent to the agent as a LangChain audio content block; there is no separate STT step.
+The current implementation keeps speech adapters replaceable. Twilio bidirectional Media Streams, μ-law audio framing, Silero VAD buffering, LangGraph SDK streaming, visitor registration, Kokoro-82M TTS, and WeCom notification are implemented. Caller audio is sent to the agent as an OpenAI-compatible `input_audio` content block; there is no separate STT step.
 
 Code is split by responsibility: `agent` contains the LangGraph workflow, visitor domain model, registration tools, and guard notification; `voice` contains the FastAPI/Twilio transport layer, audio framing, utterance buffering, LangGraph SDK client, VAD, and TTS adapters.
 
@@ -39,8 +39,9 @@ uv sync --dev --extra voice-local
 Required environment variables:
 
 ```bash
-ANTHROPIC_API_KEY=...
-AGENT_MODEL=provider:model-with-audio-input
+AGENT_MODEL=qwen3.5-omni-flash
+OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+OPENAI_API_KEY=sk-your-dashscope-api-key
 LANGGRAPH_API_URL=http://127.0.0.1:2024
 LANGGRAPH_ASSISTANT_ID=agent
 PUBLIC_BASE_URL=https://your-ngrok-url
@@ -52,7 +53,9 @@ AGENT_VOICE=zf_xiaoxiao
 VAD_PROVIDER=silero
 ```
 
-`AGENT_MODEL` must point at a LangChain chat model/provider that accepts audio content blocks. Add that provider package if it is not already in `pyproject.toml`.
+For DashScope, keep the OpenAI-compatible base URL at `/compatible-mode/v1`. The model name in `AGENT_MODEL` must match the model identifier exposed by the provider; this repo uses LangChain's `ChatOpenAI` adapter with the configured OpenAI-compatible environment.
+
+The Twilio voice path currently sends caller audio to the agent as a Base64 Data URL in an `input_audio` block. Use an audio-capable chat model such as `qwen3.5-omni-flash`; text-only local models need a separate STT step before the live phone flow.
 
 Run the LangGraph server and voice server in separate terminals:
 
