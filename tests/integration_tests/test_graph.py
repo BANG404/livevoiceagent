@@ -1,15 +1,26 @@
-import os
-
 import pytest
 
+from agent.config import settings
 from agent.graph import graph
 
 pytestmark = pytest.mark.anyio
 
-if not os.getenv("ANTHROPIC_API_KEY"):
-    pytest.skip(
-        "Set ANTHROPIC_API_KEY to run integration tests.", allow_module_level=True
-    )
+
+def _skip_unavailable_model() -> None:
+    if not settings.agent_model:
+        pytest.skip(
+            "Set AGENT_MODEL to run integration tests.",
+            allow_module_level=True,
+        )
+
+    if not settings.openai_api_key or settings.openai_api_key.startswith("sk-your-"):
+        pytest.skip(
+            "Set OPENAI_API_KEY to run OpenAI-compatible integration tests.",
+            allow_module_level=True,
+        )
+
+
+_skip_unavailable_model()
 
 
 async def test_agent_smoke() -> None:
