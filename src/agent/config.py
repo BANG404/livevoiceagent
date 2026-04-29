@@ -5,23 +5,42 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 def _getenv(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+def _getint(name: str, default: int) -> int:
+    value = _getenv(name)
+    return int(value) if value else default
+
+
+def _getfloat(name: str, default: float) -> float:
+    value = _getenv(name)
+    return float(value) if value else default
+
+
 @dataclass(frozen=True)
 class Settings:
     agent_model: str = _getenv("AGENT_MODEL", "anthropic:claude-sonnet-4-6")
+    langgraph_api_url: str = _getenv("LANGGRAPH_API_URL", "http://127.0.0.1:2024")
+    langgraph_api_key: str = _getenv("LANGGRAPH_API_KEY")
+    langgraph_assistant_id: str = _getenv("LANGGRAPH_ASSISTANT_ID", "agent")
     public_base_url: str = _getenv("PUBLIC_BASE_URL", "http://localhost:8000")
     guard_wechat_webhook: str = _getenv("GUARD_WECHAT_WEBHOOK")
     visitor_store_path: str = _getenv("VISITOR_STORE_PATH", "data/visitors.jsonl")
     park_name: str = _getenv("PARK_NAME", "园区")
-    agent_voice: str = _getenv("AGENT_VOICE", "zf_001")
-    openai_api_key: str = _getenv("OPENAI_API_KEY")
-    stt_model: str = _getenv("STT_MODEL", "gpt-4o-mini-transcribe")
+    agent_voice: str = _getenv("AGENT_VOICE", "zf_xiaoxiao")
     tts_provider: str = _getenv("TTS_PROVIDER", "kokoro")
     kokoro_lang_code: str = _getenv("KOKORO_LANG_CODE", "z")
+    kokoro_repo_id: str = _getenv("KOKORO_REPO_ID", "hexgrad/Kokoro-82M")
+    vad_provider: str = _getenv("VAD_PROVIDER", "silero")
+    silero_vad_threshold: float = _getfloat("SILERO_VAD_THRESHOLD", 0.5)
+    silero_vad_min_silence_ms: int = _getint("SILERO_VAD_MIN_SILENCE_MS", 350)
 
     @property
     def websocket_base_url(self) -> str:
