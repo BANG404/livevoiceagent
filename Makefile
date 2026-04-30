@@ -1,9 +1,10 @@
-.PHONY: help install dev run voice test integration-tests lint format
+.PHONY: help install sync dev run voice test integration-tests lint format
 
 help:
 	@echo 'Targets:'
 	@echo '  install             Sync runtime dependencies with uv'
-	@echo '  dev                 Sync project + dev dependencies with uv'
+	@echo '  sync                Sync project + dev dependencies with uv'
+	@echo '  dev                 Sync deps and start LangGraph + FastAPI with overmind'
 	@echo '  run                 Start the local LangGraph dev server'
 	@echo '  voice               Start the Twilio voice webhook server'
 	@echo '  test                Run unit tests'
@@ -14,14 +15,22 @@ help:
 install:
 	uv sync --no-dev
 
-dev:
+sync:
 	uv sync
+
+dev: sync
+	@command -v overmind >/dev/null 2>&1 || { echo "overmind is required for make dev"; exit 1; }
+	@if [ -S ./.overmind.sock ] && ! overmind status >/dev/null 2>&1; then \
+		echo "Removing stale Overmind socket ./.overmind.sock"; \
+		rm -f ./.overmind.sock; \
+	fi
+	overmind start -f Procfile.dev
 
 run:
 	uv run langgraph dev
 
 voice:
-	uv run uvicorn voice.app:app --host 0.0.0.0 --port 8000
+	uv run uvicorn voice.app:app --host 0.0.0.0 --port 8000 --reload
 
 test:
 	uv run python -m pytest tests/unit_tests -q
