@@ -177,6 +177,8 @@ class UtteranceBuffer:
         self.frames: list[bytes] = []
         self.speech_frames = 0
         self.silence_frames = 0
+        self.turn_open = False
+        self._speech_started = False
 
     def push(self, pcm16: bytes) -> bytes | None:
         speaking = self.vad.is_speech(pcm16)
@@ -186,6 +188,9 @@ class UtteranceBuffer:
             self.speech_frames += 1
             self.silence_frames = 0
             self.frames.append(pcm16)
+            if not self.turn_open and self.speech_frames >= self.min_speech_frames:
+                self.turn_open = True
+                self._speech_started = True
             return None
 
         self.preroll.append(pcm16)
@@ -212,9 +217,16 @@ class UtteranceBuffer:
 
         return None
 
+    def consume_speech_started(self) -> bool:
+        started = self._speech_started
+        self._speech_started = False
+        return started
+
     def reset(self) -> None:
         self.frames = []
         self.speech_frames = 0
         self.silence_frames = 0
         self.preroll.clear()
+        self.turn_open = False
+        self._speech_started = False
         self.vad.reset()
