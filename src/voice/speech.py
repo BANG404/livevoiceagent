@@ -8,12 +8,20 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import wave
 from collections.abc import AsyncIterator
 
 import numpy as np
 
 from agent.config import Settings
+
+
+logger = logging.getLogger(__name__)
+DEFAULT_KOKORO_ZH_VOICE = "zf_xiaobei"
+KOKORO_VOICE_ALIASES = {
+    "zf_001": DEFAULT_KOKORO_ZH_VOICE,
+}
 
 
 def pcm16_wav_bytes(pcm16: bytes, sample_rate: int = 8000) -> bytes:
@@ -68,22 +76,60 @@ class KokoroTextToSpeech(TextToSpeech):
         return b"".join(self._synthesize_pcm16_chunks_sync(text))
 
     def _synthesize_pcm16_chunks_sync(self, text: str) -> list[bytes]:
-        chunks: list[np.ndarray] = []
-        for _, _, audio in self.pipeline(text, voice=self.settings.agent_voice):
-            if audio is not None:
-                chunks.append(np.asarray(audio, dtype=np.float32))
+        voices = self._voice_candidates()
+        last_error: Exception | None = None
 
-        if not chunks:
-            return []
+        for index, voice in enumerate(voices):
+            try:
+                chunks: list[np.ndarray] = []
+                for _, _, audio in self.pipeline(text, voice=voice):
+                    if audio is not None:
+                        chunks.append(np.asarray(audio, dtype=np.float32))
+                if chunks:
+                    return [_waveform_to_twilio_pcm16(waveform) for waveform in chunks]
+            except Exception as exc:
+                last_error = exc
+                if index + 1 < len(voices):
+                    logger.warning(
+                        "Kokoro voice %r failed; retrying with %r.",
+                        voice,
+                        voices[index + 1],
+                        exc_info=exc,
+                    )
+                    continue
+                logger.exception("Kokoro synthesis failed for voice %r.", voice)
 
-        return [_waveform_to_twilio_pcm16(waveform) for waveform in chunks]
+        if last_error is None:
+            logger.warning("Kokoro returned no audio for voice %r.", voices[0])
+        return []
+
+    def _voice_candidates(self) -> list[str]:
+        configured_voice = self.settings.agent_voice
+        normalized_voice = KOKORO_VOICE_ALIASES.get(configured_voice, configured_voice)
+        if normalized_voice != configured_voice:
+            logger.warning(
+                "Mapped legacy Kokoro voice %r to %r.",
+                configured_voice,
+                normalized_voice,
+            )
+
+        voices = [normalized_voice]
+        if (
+            self.settings.kokoro_lang_code == "z"
+            and normalized_voice != DEFAULT_KOKORO_ZH_VOICE
+        ):
+            voices.append(DEFAULT_KOKORO_ZH_VOICE)
+        return voices
 
 
 def build_tts(settings: Settings) -> TextToSpeech:
     if settings.tts_provider == "kokoro":
         try:
             return KokoroTextToSpeech(settings)
-        except ImportError:
+        except Exception:
+            logger.exception(
+                "Failed to initialize Kokoro TTS; falling back to silence output."
+            )
             return SilenceTextToSpeech()
     return SilenceTextToSpeech()
 
