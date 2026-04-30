@@ -35,11 +35,11 @@ For the local microphone-to-speaker websocket client, install the optional
 audio-device dependency:
 
 ```bash
-uv sync --dev --extra voice-local
+uv sync --dev
 ```
 
-The `voice-local` extra installs `sounddevice`. On Ubuntu/Debian you also need
-the system PortAudio library, for example:
+The default install includes `sounddevice`. On Ubuntu/Debian you also need the
+system PortAudio library, for example:
 
 ```bash
 sudo apt-get install portaudio19-dev
