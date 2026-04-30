@@ -3315,13 +3315,9 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "silero-vad" },
+    { name = "sounddevice" },
     { name = "twilio" },
     { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.optional-dependencies]
-voice-local = [
-    { name = "sounddevice" },
 ]
 
 [package.dev-dependencies]
@@ -3348,11 +3344,10 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "python-multipart", specifier = ">=0.0.17" },
     { name = "silero-vad", specifier = ">=6.0.0" },
-    { name = "sounddevice", marker = "extra == 'voice-local'", specifier = ">=0.5.1" },
+    { name = "sounddevice", specifier = ">=0.5.1" },
     { name = "twilio", specifier = ">=9.3.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
 ]
-provides-extras = ["voice-local"]
 
 [package.metadata.requires-dev]
 dev = [
