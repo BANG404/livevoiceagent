@@ -1,5 +1,10 @@
+import subprocess
+
+import pytest
+
 from voice.live_ws_client import (
     LocalTurnDetector,
+    PulseAudioBridge,
     normalize_command,
     parse_args,
     parse_device,
@@ -115,3 +120,49 @@ def test_parse_device_supports_int_and_string() -> None:
     assert parse_device("1") == 1
     assert parse_device("RDPSource") == "RDPSource"
     assert parse_device(None) is None
+
+
+def test_pulseaudio_bridge_start_fails_fast_when_backend_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        def __init__(self, *, stderr: bytes, returncode: int = 1) -> None:
+            self.stdout = None
+            self.stdin = None
+            self.stderr = _FakeReader(stderr)
+            self._returncode = returncode
+
+        def poll(self) -> int:
+            return self._returncode
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self._returncode
+
+        def kill(self) -> None:
+            return None
+
+    class _FakeReader:
+        def __init__(self, payload: bytes) -> None:
+            self.payload = payload
+
+        def read(self) -> bytes:
+            return self.payload
+
+    processes = [
+        FakeProcess(stderr=b"Connection failure: Connection refused\n"),
+        FakeProcess(stderr=b""),
+    ]
+
+    def fake_popen(*_args, **_kwargs) -> FakeProcess:  # type: ignore[no-untyped-def]
+        return processes.pop(0)
+
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/fake")
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    bridge = PulseAudioBridge()
+
+    with pytest.raises(RuntimeError, match="PulseAudio command `parec` failed to start"):
+        bridge.start()

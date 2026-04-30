@@ -10,6 +10,7 @@ import os
 import queue
 import shutil
 import subprocess
+import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -111,7 +112,7 @@ class LocalAudioBridge:
         except ImportError as exc:
             raise RuntimeError(
                 "sounddevice is required for the live local voice client. "
-                "Run `rtk uv sync --dev --extra voice-local` first."
+                "Run `rtk uv sync --dev` first."
             ) from exc
         except OSError as exc:
             raise RuntimeError(
@@ -270,15 +271,17 @@ class PulseAudioBridge:
         self.capture_process = subprocess.Popen(
             parec_cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             env=env,
         )
         self.playback_process = subprocess.Popen(
             paplay_cmd,
             stdin=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             env=env,
         )
+        self._ensure_process_started(self.capture_process, "parec")
+        self._ensure_process_started(self.playback_process, "paplay")
         self.capture_task = asyncio.create_task(self._capture_loop())
         self.playback_task = asyncio.create_task(self._playback_loop())
 
@@ -370,6 +373,31 @@ class PulseAudioBridge:
         with contextlib.suppress(Exception):
             process.kill()
 
+    @staticmethod
+    def _ensure_process_started(
+        process: subprocess.Popen[bytes],
+        command_name: str,
+        startup_timeout: float = 0.2,
+    ) -> None:
+        deadline = time.monotonic() + startup_timeout
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+            time.sleep(0.01)
+
+        if process.poll() is None:
+            return
+
+        stderr = b""
+        if process.stderr is not None:
+            with contextlib.suppress(Exception):
+                stderr = process.stderr.read()
+        message = stderr.decode("utf-8", errors="replace").strip()
+        detail = f": {message}" if message else ""
+        raise RuntimeError(
+            f"PulseAudio command `{command_name}` failed to start{detail}"
+        )
+
 
 def is_wsl_pulse_available() -> bool:
     return os.path.exists("/mnt/wslg/PulseServer") and shutil.which("parec") is not None
@@ -386,16 +414,24 @@ def choose_audio_bridge(
         )
         return bridge, "sounddevice"
     except Exception as exc:
+        sounddevice_error = exc
         if not is_wsl_pulse_available():
             raise RuntimeError(
                 f"Failed to initialize local audio via sounddevice: {exc}"
             ) from exc
 
-        bridge = PulseAudioBridge(
-            input_device=input_device if isinstance(input_device, str) else None,
-            output_device=output_device if isinstance(output_device, str) else None,
-        )
-        return bridge, "pulseaudio"
+        try:
+            bridge = PulseAudioBridge(
+                input_device=input_device if isinstance(input_device, str) else None,
+                output_device=output_device if isinstance(output_device, str) else None,
+            )
+            return bridge, "pulseaudio"
+        except Exception as pulse_exc:
+            raise RuntimeError(
+                "Failed to initialize local audio. "
+                f"sounddevice failed first: {sounddevice_error}. "
+                f"PulseAudio fallback failed next: {pulse_exc}"
+            ) from pulse_exc
 
 
 async def send_microphone_audio(
@@ -696,7 +732,7 @@ def list_devices() -> int:
     except ImportError as exc:
         raise RuntimeError(
             "sounddevice is required for device listing. "
-            "Run `rtk uv sync --dev --extra voice-local` first."
+            "Run `rtk uv sync --dev` first."
         ) from exc
 
     print(sd.query_devices())
