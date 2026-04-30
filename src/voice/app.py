@@ -36,6 +36,7 @@ async def voice_webhook(request: Request) -> Response:
     caller = form.get("From", "")
 
     response = VoiceResponse()
+    response.say(settings.twilio_welcome_message, language="zh-CN")
     connect = Connect()
     stream = connect.stream(url=f"{settings.websocket_base_url}/twilio/media")
     stream.parameter(name="call_sid", value=str(call_sid))
@@ -71,13 +72,6 @@ async def twilio_media(websocket: WebSocket) -> None:
                 stream_sid = event["start"]["streamSid"]
                 metadata = _parse_custom_parameters(
                     event["start"].get("customParameters", {})
-                )
-                await _send_audio(
-                    websocket,
-                    stream_sid,
-                    await tts.synthesize_pcm16(
-                        "您好，请问车牌号多少，今天找哪家公司，什么事儿？"
-                    ),
                 )
                 thread_id = await agent.create_thread(metadata)
                 continue

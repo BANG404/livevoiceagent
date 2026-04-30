@@ -36,10 +36,14 @@ class Settings:
     langgraph_api_key: str = _getenv("LANGGRAPH_API_KEY")
     langgraph_assistant_id: str = _getenv("LANGGRAPH_ASSISTANT_ID", "agent")
     public_base_url: str = _getenv("PUBLIC_BASE_URL", "http://localhost:8000")
+    twilio_welcome_message: str = _getenv(
+        "TWILIO_WELCOME_MESSAGE",
+        "您好，请问车牌号多少，今天找哪家公司，什么事儿？",
+    )
     guard_wechat_webhook: str = _getenv("GUARD_WECHAT_WEBHOOK")
     visitor_store_path: str = _getenv("VISITOR_STORE_PATH", "data/visitors.jsonl")
     park_name: str = _getenv("PARK_NAME", "园区")
-    agent_voice: str = _getenv("AGENT_VOICE", "zf_xiaoxiao")
+    agent_voice: str = _getenv("AGENT_VOICE", "zf_xiaobei")
     tts_provider: str = _getenv("TTS_PROVIDER", "kokoro")
     kokoro_lang_code: str = _getenv("KOKORO_LANG_CODE", "z")
     kokoro_repo_id: str = _getenv("KOKORO_REPO_ID", "hexgrad/Kokoro-82M")
