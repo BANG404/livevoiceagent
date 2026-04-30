@@ -117,3 +117,19 @@ def test_utterance_buffer_discards_short_noise_bursts() -> None:
     assert buffer.push(_pcm_frame(0)) is None
     assert buffer.frames == []
     assert vad.reset_calls == 1
+
+
+def test_utterance_buffer_reports_speech_start_once() -> None:
+    buffer = UtteranceBuffer(
+        vad=ScriptedVad([True, True, False, False]),
+        silence_frames_to_close=2,
+        min_speech_frames=2,
+    )
+
+    assert buffer.push(_pcm_frame(900)) is None
+    assert buffer.consume_speech_started() is False
+    assert buffer.push(_pcm_frame(900)) is None
+    assert buffer.consume_speech_started() is True
+    assert buffer.consume_speech_started() is False
+    assert buffer.push(_pcm_frame(0)) is None
+    assert buffer.push(_pcm_frame(0)) is not None

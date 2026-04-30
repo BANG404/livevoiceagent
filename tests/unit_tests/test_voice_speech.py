@@ -43,6 +43,7 @@ async def test_silence_tts_uses_bounded_duration() -> None:
 
 def test_build_tts_falls_back_to_silence_when_kokoro_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     original_import = __import__
 
@@ -53,9 +54,11 @@ def test_build_tts_falls_back_to_silence_when_kokoro_is_unavailable(
 
     monkeypatch.setattr("builtins.__import__", fake_import)
 
+    caplog.set_level("ERROR")
     tts = build_tts(Settings(tts_provider="kokoro"))
 
     assert isinstance(tts, SilenceTextToSpeech)
+    assert "Failed to initialize Kokoro TTS" in caplog.text
 
 
 @pytest.mark.anyio
@@ -70,7 +73,11 @@ async def test_kokoro_tts_streams_resampled_pcm16_chunks(
 
         def __call__(self, text: str, voice: str):
             self.calls.append((text, voice))
-            yield (0, None, np.array([0.0, 0.5, -0.5, 1.0, -1.0, 0.25], dtype=np.float32))
+            yield (
+                0,
+                None,
+                np.array([0.0, 0.5, -0.5, 1.0, -1.0, 0.25], dtype=np.float32),
+            )
             yield (1, None, np.array([0.1, -0.1, 0.0], dtype=np.float32))
 
     fake_kokoro = types.SimpleNamespace(KPipeline=FakePipeline)
@@ -80,7 +87,7 @@ async def test_kokoro_tts_streams_resampled_pcm16_chunks(
         tts_provider="kokoro",
         kokoro_lang_code="z",
         kokoro_repo_id="repo/test",
-        agent_voice="voice_a",
+        agent_voice="zf_xiaobei",
     )
     tts = KokoroTextToSpeech(settings)
 
@@ -88,7 +95,39 @@ async def test_kokoro_tts_streams_resampled_pcm16_chunks(
 
     assert len(chunks) == 2
     assert all(isinstance(chunk, bytes) and chunk for chunk in chunks)
-    assert tts.pipeline.calls == [("您好", "voice_a")]
+    assert tts.pipeline.calls == [("您好", "zf_xiaobei")]
+
+
+@pytest.mark.anyio
+async def test_kokoro_tts_retries_with_default_voice_when_configured_voice_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePipeline:
+        def __init__(self, *, lang_code: str, repo_id: str) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def __call__(self, text: str, voice: str):
+            self.calls.append((text, voice))
+            if voice == "missing_voice":
+                raise FileNotFoundError("voice asset not found")
+            yield (0, None, np.array([0.0, 0.25, -0.25], dtype=np.float32))
+
+    fake_kokoro = types.SimpleNamespace(KPipeline=FakePipeline)
+    monkeypatch.setitem(sys.modules, "kokoro", fake_kokoro)
+
+    settings = Settings(
+        tts_provider="kokoro",
+        kokoro_lang_code="z",
+        kokoro_repo_id="repo/test",
+        agent_voice="missing_voice",
+    )
+    tts = KokoroTextToSpeech(settings)
+
+    chunks = [chunk async for chunk in tts.stream_pcm16("您好")]
+
+    assert len(chunks) == 1
+    assert all(isinstance(chunk, bytes) and chunk for chunk in chunks)
+    assert tts.pipeline.calls == [("您好", "missing_voice"), ("您好", "zf_xiaobei")]
 
 
 def test_waveform_to_twilio_pcm16_resamples_from_24k_to_8k() -> None:

@@ -39,6 +39,8 @@ def test_parse_args_for_live_ws_client() -> None:
     assert args.send_poll_ms == 7
     assert args.manual_turns is False
     assert args.vad_provider == "silero"
+    assert args.min_speech_frames == 5
+    assert args.interrupt_speech_frames == 8
 
 
 class ScriptedVad:
@@ -82,6 +84,31 @@ def test_local_turn_detector_streams_preroll_and_closes_after_silence() -> None:
     assert frames == [frame]
     assert event == "stop"
     assert detector.vad.reset_calls == 1
+
+
+def test_local_turn_detector_requires_more_frames_during_agent_playback() -> None:
+    agent_speaking = True
+    detector = LocalTurnDetector(
+        vad=ScriptedVad([True, True, True, False, False]),
+        tail_silence_ms=40,
+        min_speech_frames=2,
+        interrupt_speech_frames=3,
+        preroll_frames=3,
+        is_agent_speaking=lambda: agent_speaking,
+    )
+    frame = b"\x01" * 320
+
+    frames, event = detector.push(frame)
+    assert frames == []
+    assert event is None
+
+    frames, event = detector.push(frame)
+    assert frames == []
+    assert event is None
+
+    frames, event = detector.push(frame)
+    assert frames == [frame, frame, frame]
+    assert event == "start"
 
 
 def test_parse_device_supports_int_and_string() -> None:
