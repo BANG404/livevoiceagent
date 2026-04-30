@@ -26,14 +26,23 @@ Code is split by responsibility: `agent` contains the LangGraph workflow, visito
 ## Setup
 
 ```bash
-uv sync --dev
+make sync
 cp .env.example .env
 ```
 
-For local Kokoro/Silero experiments, install optional voice dependencies:
+`Silero VAD` and `Kokoro-82M TTS` are part of the default runtime install.
+For the local microphone-to-speaker websocket client, install the optional
+audio-device dependency:
 
 ```bash
 uv sync --dev --extra voice-local
+```
+
+The `voice-local` extra installs `sounddevice`. On Ubuntu/Debian you also need
+the system PortAudio library, for example:
+
+```bash
+sudo apt-get install portaudio19-dev
 ```
 
 Required environment variables:
@@ -45,11 +54,12 @@ OPENAI_API_KEY=sk-your-dashscope-api-key
 LANGGRAPH_API_URL=http://127.0.0.1:2024
 LANGGRAPH_ASSISTANT_ID=agent
 PUBLIC_BASE_URL=https://your-ngrok-url
+TWILIO_WELCOME_MESSAGE=您好，请问车牌号多少，今天找哪家公司，什么事儿？
 GUARD_WECHAT_WEBHOOK=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
 TTS_PROVIDER=kokoro
 KOKORO_LANG_CODE=z
 KOKORO_REPO_ID=hexgrad/Kokoro-82M
-AGENT_VOICE=zf_xiaoxiao
+AGENT_VOICE=zf_xiaobei
 VAD_PROVIDER=silero
 ```
 
@@ -57,11 +67,53 @@ For DashScope, keep the OpenAI-compatible base URL at `/compatible-mode/v1`. The
 
 The Twilio voice path currently sends caller audio to the agent as a Base64 Data URL in an `input_audio` block. Use an audio-capable chat model such as `qwen3.5-omni-flash`; text-only local models need a separate STT step before the live phone flow.
 
-Run the LangGraph server and voice server in separate terminals:
+Inbound calls first play the configured `TWILIO_WELCOME_MESSAGE` through TwiML `<Say>`, then switch into bidirectional Media Streams at `/twilio/media`.
+
+Start the LangGraph server and voice server together for local testing:
+
+```bash
+make dev
+```
+
+If you want to run them separately:
 
 ```bash
 make run
 make voice
+```
+
+To verify the real `Silero VAD` and `Kokoro` integrations, run:
+
+```bash
+uv run python -m pytest tests/integration_tests/test_voice_stack.py -q
+```
+
+The `Kokoro` integration test performs a real synthesis call and may download
+model files from Hugging Face on first run.
+
+For a local realtime voice loop without Twilio, start the voice server and run:
+
+```bash
+uv run python scripts/live_ws_voice_chat.py
+```
+
+The local client connects straight to `/twilio/media` and now uses local VAD to
+stream microphone audio continuously. Speak naturally and the client will open
+and close turns automatically; `q` exits. If you want the old manual turn
+controls, run `uv run python scripts/live_ws_voice_chat.py --manual-turns`,
+then use `r` to start a turn, `s` to stop it, and `q` to exit. If you need
+device indices first, run:
+
+```bash
+uv run python scripts/live_ws_voice_chat.py --list-devices
+```
+
+On WSL, `sounddevice` often cannot see default devices even when WSLg audio is
+working. The client now falls back to `parec`/`paplay` against WSLg's
+PulseAudio bridge. To inspect those device names, run:
+
+```bash
+uv run python scripts/live_ws_voice_chat.py --list-pulse-devices
 ```
 
 Expose it to Twilio:
