@@ -12,6 +12,7 @@ dependencies = [
     "langchain-anthropic>=1.0.0",
     "langgraph>=1.0.0",
     "langgraph-sdk>=0.3.9",
+    "misaki[zh]>=0.9.4",
     "numpy>=2.1.0",
     "pydantic>=2.10.0",
     "python-multipart>=0.0.17",
