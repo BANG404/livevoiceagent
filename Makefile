@@ -27,7 +27,7 @@ dev: sync
 	overmind start -f Procfile.dev
 
 run:
-	uv run langgraph dev
+	uv run langgraph dev --no-browser
 
 voice:
 	uv run uvicorn voice.app:app --host 0.0.0.0 --port 8000 --reload
