@@ -8,7 +8,8 @@ This is a Python 3.13 `uv` project for a live voice visitor-registration agent. 
 
 Use the Makefile targets as the stable interface:
 
-- `make dev` syncs runtime and development dependencies with `uv`.
+- `make sync` syncs runtime and development dependencies with `uv`.
+- `make dev` syncs dependencies and starts LangGraph + FastAPI via `overmind`.
 - `make run` starts the local LangGraph dev server.
 - `make voice` runs the Twilio/FastAPI webhook server on port `8000`.
 - `make test` runs unit tests in `tests/unit_tests`.
