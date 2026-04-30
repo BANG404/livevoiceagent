@@ -11,7 +11,7 @@ import queue
 import shutil
 import subprocess
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -50,12 +50,16 @@ class LocalTurnDetector:
         vad: VoiceActivityDetector,
         tail_silence_ms: int,
         min_speech_frames: int = 3,
+        interrupt_speech_frames: int = 8,
         preroll_frames: int = 6,
+        is_agent_speaking: Callable[[], bool] | None = None,
     ) -> None:
         self.vad = vad
         self.silence_frames_to_close = tail_silence_frames(tail_silence_ms)
         self.min_speech_frames = min_speech_frames
+        self.interrupt_speech_frames = interrupt_speech_frames
         self.preroll: deque[bytes] = deque(maxlen=preroll_frames)
+        self.is_agent_speaking = is_agent_speaking or (lambda: False)
         self.active = False
         self.speech_frames = 0
         self.silence_frames = 0
@@ -66,7 +70,12 @@ class LocalTurnDetector:
         if not self.active:
             self.preroll.append(pcm16)
             self.speech_frames = self.speech_frames + 1 if speaking else 0
-            if self.speech_frames < self.min_speech_frames:
+            required_frames = (
+                self.interrupt_speech_frames
+                if self.is_agent_speaking()
+                else self.min_speech_frames
+            )
+            if self.speech_frames < required_frames:
                 return [], None
             self.active = True
             self.silence_frames = 0
@@ -117,6 +126,7 @@ class LocalAudioBridge:
         self.frame_bytes = frame_bytes
         self.input_queue: queue.Queue[bytes] = queue.Queue(maxsize=max_queue_frames)
         self.output_queue: queue.Queue[bytes] = queue.Queue(maxsize=max_queue_frames)
+        self.playback_active = False
         self.input_stream = sd.RawInputStream(
             samplerate=sample_rate,
             blocksize=frame_bytes // 2,
@@ -154,11 +164,21 @@ class LocalAudioBridge:
                 self.input_queue.get_nowait()
 
     def play(self, pcm16: bytes) -> None:
+        self.playback_active = True
         for offset in range(0, len(pcm16), self.frame_bytes):
             frame = pcm16[offset : offset + self.frame_bytes]
             if len(frame) < self.frame_bytes:
                 frame += b"\x00" * (self.frame_bytes - len(frame))
             self._put_output(frame)
+
+    def clear_output(self) -> None:
+        while not self.output_queue.empty():
+            with contextlib.suppress(queue.Empty):
+                self.output_queue.get_nowait()
+        self.playback_active = False
+
+    def is_output_active(self) -> bool:
+        return self.playback_active
 
     def _on_input(self, indata: bytes, frames: int, time: Any, status: Any) -> None:
         if status:
@@ -180,6 +200,7 @@ class LocalAudioBridge:
             chunk = self.output_queue.get_nowait()
         except queue.Empty:
             chunk = b"\x00" * len(outdata)
+            self.playback_active = False
         outdata[:] = chunk[: len(outdata)].ljust(len(outdata), b"\x00")
 
     def _put_input(self, frame: bytes) -> None:
@@ -222,6 +243,7 @@ class PulseAudioBridge:
         self.playback_process: subprocess.Popen[bytes] | None = None
         self.capture_task: asyncio.Task[None] | None = None
         self.playback_task: asyncio.Task[None] | None = None
+        self.playback_active = False
 
     def start(self) -> None:
         env = os.environ.copy()
@@ -278,11 +300,21 @@ class PulseAudioBridge:
                 self.input_queue.get_nowait()
 
     def play(self, pcm16: bytes) -> None:
+        self.playback_active = True
         for offset in range(0, len(pcm16), self.frame_bytes):
             frame = pcm16[offset : offset + self.frame_bytes]
             if len(frame) < self.frame_bytes:
                 frame += b"\x00" * (self.frame_bytes - len(frame))
             self._put_output(frame)
+
+    def clear_output(self) -> None:
+        while not self.output_queue.empty():
+            with contextlib.suppress(queue.Empty):
+                self.output_queue.get_nowait()
+        self.playback_active = False
+
+    def is_output_active(self) -> bool:
+        return self.playback_active
 
     async def _capture_loop(self) -> None:
         assert self.capture_process is not None
@@ -305,9 +337,13 @@ class PulseAudioBridge:
         assert self.playback_process.stdin is not None
 
         while True:
+            self.playback_active = False
             frame = await asyncio.to_thread(self.output_queue.get)
+            self.playback_active = True
             await asyncio.to_thread(self.playback_process.stdin.write, frame)
             await asyncio.to_thread(self.playback_process.stdin.flush)
+            if self.output_queue.empty():
+                self.playback_active = False
 
     def _put_input(self, frame: bytes) -> None:
         if self.input_queue.full():
@@ -375,6 +411,7 @@ async def send_microphone_audio(
     vad_threshold: float,
     vad_min_silence_ms: int,
     min_speech_frames: int,
+    interrupt_speech_frames: int,
     preroll_frames: int,
 ) -> None:
     if manual_turns:
@@ -397,6 +434,7 @@ async def send_microphone_audio(
         vad_threshold=vad_threshold,
         vad_min_silence_ms=vad_min_silence_ms,
         min_speech_frames=min_speech_frames,
+        interrupt_speech_frames=interrupt_speech_frames,
         preroll_frames=preroll_frames,
     )
 
@@ -435,6 +473,7 @@ async def send_microphone_audio_auto(
     vad_threshold: float,
     vad_min_silence_ms: int,
     min_speech_frames: int,
+    interrupt_speech_frames: int,
     preroll_frames: int,
 ) -> None:
     detector = LocalTurnDetector(
@@ -445,7 +484,9 @@ async def send_microphone_audio_auto(
         ),
         tail_silence_ms=tail_silence_ms,
         min_speech_frames=min_speech_frames,
+        interrupt_speech_frames=interrupt_speech_frames,
         preroll_frames=preroll_frames,
+        is_agent_speaking=audio_bridge.is_output_active,
     )
 
     while not state.closed:
@@ -455,6 +496,9 @@ async def send_microphone_audio_auto(
 
         frames_to_send, event = detector.push(frame)
         if event == "start":
+            if audio_bridge.is_output_active():
+                audio_bridge.clear_output()
+                print("agent interrupted")
             state.recording = True
             print("speech started")
 
@@ -476,6 +520,10 @@ async def receive_agent_audio(
     while not state.closed:
         raw = await websocket.recv()
         event = json.loads(raw)
+        if event.get("event") == "clear":
+            audio_bridge.clear_output()
+            print("agent playback cleared")
+            continue
         if event.get("event") != "media":
             print(f"recv event: {event.get('event')}")
             continue
@@ -574,6 +622,7 @@ async def run_live_session(
     vad_threshold: float = 0.5,
     vad_min_silence_ms: int = 350,
     min_speech_frames: int = 3,
+    interrupt_speech_frames: int = 8,
     preroll_frames: int = 6,
 ) -> None:
     state = SessionState()
@@ -612,6 +661,7 @@ async def run_live_session(
                     vad_threshold=vad_threshold,
                     vad_min_silence_ms=vad_min_silence_ms,
                     min_speech_frames=min_speech_frames,
+                    interrupt_speech_frames=interrupt_speech_frames,
                     preroll_frames=preroll_frames,
                 )
             )
@@ -746,8 +796,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--min-speech-frames",
         type=int,
-        default=3,
+        default=5,
         help="Speech frames required before opening an automatic turn.",
+    )
+    parser.add_argument(
+        "--interrupt-speech-frames",
+        type=int,
+        default=8,
+        help="Speech frames required to interrupt agent playback.",
     )
     parser.add_argument(
         "--preroll-frames",
@@ -798,6 +854,7 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
         vad_threshold=args.vad_threshold,
         vad_min_silence_ms=args.vad_min_silence_ms,
         min_speech_frames=args.min_speech_frames,
+        interrupt_speech_frames=args.interrupt_speech_frames,
         preroll_frames=args.preroll_frames,
     )
     return 0
