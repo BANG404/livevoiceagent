@@ -2,11 +2,12 @@ import base64
 import wave
 from io import BytesIO
 
+from fastapi.testclient import TestClient
 from langgraph_sdk.schema import StreamPart
 
 from voice.agent_stream import build_audio_user_message, extract_assistant_text_delta
-from voice.app import TextDeltaSegmenter
-from voice.app import _parse_custom_parameters
+import voice.app as voice_app_module
+from voice.app import TextDeltaSegmenter, app, _parse_custom_parameters
 
 
 def test_parse_custom_parameters_from_twilio_dict() -> None:
@@ -22,6 +23,32 @@ def test_parse_custom_parameters_from_parameter_list() -> None:
     assert _parse_custom_parameters([{"name": "call_sid", "value": "CA123"}]) == {
         "call_sid": "CA123"
     }
+
+
+def test_voice_webhook_returns_welcome_and_stream(monkeypatch) -> None:
+    monkeypatch.setattr(
+        voice_app_module,
+        "settings",
+        type(
+            "SettingsStub",
+            (),
+            {
+                "websocket_base_url": "wss://example.ngrok-free.app",
+                "twilio_welcome_message": "欢迎致电园区，请准备车牌号。",
+            },
+        )(),
+    )
+    client = TestClient(app)
+
+    response = client.post("/voice", data={"CallSid": "CA123", "From": "+8613800001234"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/xml")
+    assert "<Say" in response.text
+    assert "欢迎致电园区，请准备车牌号。" in response.text
+    assert "<Connect><Stream url=\"wss://example.ngrok-free.app/twilio/media\">" in response.text
+    assert "<Parameter name=\"call_sid\" value=\"CA123\" />" in response.text
+    assert "<Parameter name=\"caller\" value=\"+8613800001234\" />" in response.text
 
 
 def test_build_audio_user_message_uses_multimodal_audio_block() -> None:
