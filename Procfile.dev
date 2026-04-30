@@ -1,0 +1,2 @@
+langgraph: uv run langgraph dev
+voice: uv run uvicorn voice.app:app --host 0.0.0.0 --port 8000 --reload
