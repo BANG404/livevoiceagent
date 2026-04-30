@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Coroutine
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
@@ -61,6 +62,7 @@ async def twilio_media(websocket: WebSocket) -> None:
     tts = build_tts(settings)
     agent = LangGraphAudioAgent(settings)
     thread_id = ""
+    response_task: asyncio.Task[None] | None = None
 
     try:
         while True:
@@ -79,15 +81,24 @@ async def twilio_media(websocket: WebSocket) -> None:
             if event_type == "media":
                 pcm16 = mulaw_payload_to_pcm16(event["media"]["payload"])
                 utterance = utterances.push(pcm16)
-                if utterance:
-                    await _handle_utterance(
+                if utterances.consume_speech_started():
+                    response_task = await _cancel_response_task(
+                        response_task,
                         websocket,
                         stream_sid,
-                        utterance,
-                        agent,
-                        thread_id,
-                        tts,
-                        metadata,
+                    )
+                if utterance:
+                    response_task = await _replace_response_task(
+                        response_task,
+                        _handle_utterance(
+                            websocket,
+                            stream_sid,
+                            utterance,
+                            agent,
+                            thread_id,
+                            tts,
+                            metadata,
+                        ),
                     )
                 continue
 
@@ -96,6 +107,7 @@ async def twilio_media(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         return
     finally:
+        await _cancel_response_task(response_task, websocket, stream_sid)
         await agent.aclose()
 
 
@@ -116,6 +128,48 @@ async def _handle_utterance(
         agent.stream_reply_text(thread_id, pcm16, metadata), tts, segmenter
     ):
         await _send_audio(websocket, stream_sid, segment)
+
+
+async def _replace_response_task(
+    current: asyncio.Task[None] | None,
+    coro: Coroutine[Any, Any, None],
+) -> asyncio.Task[None]:
+    if current is not None:
+        if current.done():
+            await _await_response_task(current)
+        else:
+            current.cancel()
+            await _await_response_task(current)
+    return asyncio.create_task(coro)
+
+
+async def _cancel_response_task(
+    task: asyncio.Task[None] | None,
+    websocket: WebSocket,
+    stream_sid: str,
+) -> asyncio.Task[None] | None:
+    if task is None:
+        return None
+    if task.done():
+        await _await_response_task(task)
+        return None
+
+    task.cancel()
+    await _await_response_task(task)
+    with contextlib.suppress(RuntimeError, WebSocketDisconnect):
+        await _send_clear(websocket, stream_sid)
+    return None
+
+
+async def _await_response_task(task: asyncio.Task[None]) -> None:
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def _send_clear(websocket: WebSocket, stream_sid: str) -> None:
+    if not stream_sid:
+        return
+    await websocket.send_json({"event": "clear", "streamSid": stream_sid})
 
 
 def _parse_custom_parameters(value: object) -> dict[str, str]:
