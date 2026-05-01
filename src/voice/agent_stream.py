@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Iterable
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
@@ -11,6 +12,7 @@ from langgraph_sdk.client import LangGraphClient
 from langgraph_sdk.schema import StreamPart
 
 from agent.config import Settings
+from agent.domain import VisitorRegistration
 from voice.speech import pcm16_wav_bytes
 
 
@@ -35,6 +37,7 @@ def build_audio_user_message(
     audio_b64 = base64.b64encode(
         pcm16_wav_bytes(pcm16, sample_rate=sample_rate)
     ).decode("ascii")
+    audio_data_url = f"data:audio/wav;base64,{audio_b64}"
     return {
         "role": "user",
         "content": [
@@ -42,12 +45,42 @@ def build_audio_user_message(
             {
                 "type": "input_audio",
                 "input_audio": {
-                    "data": audio_b64,
+                    "data": audio_data_url,
                     "format": "wav",
                 },
             },
         ],
     }
+
+
+def build_recent_visits_user_message(
+    metadata: Mapping[str, str] | None = None,
+    recent_visits: Iterable[VisitorRegistration] | None = None,
+) -> dict[str, Any]:
+    metadata = metadata or {}
+    visits = list(recent_visits or [])
+    lines = [
+        "系统来电上下文：请根据以下来电信息直接开始说第一句欢迎语。",
+        "如果历史记录明显匹配，优先按回访场景做简短确认；如果不匹配，再自然收集缺失信息。",
+    ]
+    if caller := metadata.get("caller"):
+        lines.append(f"来电号码：{caller}")
+    if call_sid := metadata.get("call_sid"):
+        lines.append(f"Twilio CallSid：{call_sid}")
+    if visits:
+        lines.append("该号码近5次来访记录（按时间倒序）：")
+        for index, visit in enumerate(visits, start=1):
+            lines.append(
+                f"{index}. {visit.entry_time.strftime('%Y-%m-%d %H:%M')}，"
+                f"车牌{visit.plate_number}，"
+                f"来访单位{visit.company}，"
+                f"事由{visit.reason}。"
+            )
+    else:
+        lines.append("该号码暂无历史来访记录。")
+    lines.append("现在请直接以门卫身份开始对话，回复要短、自然、适合电话语音。")
+
+    return {"role": "user", "content": "\n".join(lines)}
 
 
 class LangGraphAudioAgent:
@@ -79,6 +112,30 @@ class LangGraphAudioAgent:
             assistant_id=self.settings.langgraph_assistant_id,
             input={
                 "messages": [build_audio_user_message(pcm16, metadata)],
+                "call_sid": metadata.get("call_sid"),
+                "caller": metadata.get("caller"),
+            },
+            metadata={
+                "call_sid": metadata.get("call_sid", ""),
+                "caller": metadata.get("caller", ""),
+            },
+            stream_mode="messages-tuple",
+            multitask_strategy="enqueue",
+        ):
+            if text := extract_assistant_text_delta(part):
+                yield text
+
+    async def stream_welcome_text(
+        self,
+        thread_id: str,
+        metadata: Mapping[str, str],
+        recent_visits: Iterable[VisitorRegistration] | None = None,
+    ) -> AsyncIterator[str]:
+        async for part in self.client.runs.stream(
+            thread_id=thread_id,
+            assistant_id=self.settings.langgraph_assistant_id,
+            input={
+                "messages": [build_recent_visits_user_message(metadata, recent_visits)],
                 "call_sid": metadata.get("call_sid"),
                 "caller": metadata.get("caller"),
             },
@@ -149,5 +206,6 @@ __all__ = [
     "LangGraphClient",
     "VOICE_AUDIO_INSTRUCTION",
     "build_audio_user_message",
+    "build_recent_visits_user_message",
     "extract_assistant_text_delta",
 ]

@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from twilio.twiml.voice_response import Connect, VoiceResponse
 
 from agent.config import settings
+from agent.domain import VisitorStore
 from voice.agent_stream import LangGraphAudioAgent
 from voice.audio import (
     UtteranceBuffer,
@@ -37,7 +38,6 @@ async def voice_webhook(request: Request) -> Response:
     caller = form.get("From", "")
 
     response = VoiceResponse()
-    response.say(settings.twilio_welcome_message, language="zh-CN")
     connect = Connect()
     stream = connect.stream(url=f"{settings.websocket_base_url}/twilio/media")
     stream.parameter(name="call_sid", value=str(call_sid))
@@ -76,6 +76,16 @@ async def twilio_media(websocket: WebSocket) -> None:
                     event["start"].get("customParameters", {})
                 )
                 thread_id = await agent.create_thread(metadata)
+                recent_visits = _recent_visits_for_caller(metadata)
+                response_task = await _replace_response_task(
+                    response_task,
+                    _stream_agent_reply(
+                        websocket,
+                        stream_sid,
+                        agent.stream_welcome_text(thread_id, metadata, recent_visits),
+                        tts,
+                    ),
+                )
                 continue
 
             if event_type == "media":
@@ -123,11 +133,30 @@ async def _handle_utterance(
     if not thread_id:
         return
 
+    await _stream_agent_reply(
+        websocket,
+        stream_sid,
+        agent.stream_reply_text(thread_id, pcm16, metadata),
+        tts,
+    )
+
+
+async def _stream_agent_reply(
+    websocket: WebSocket,
+    stream_sid: str,
+    text_stream: AsyncIterator[str],
+    tts: TextToSpeech,
+) -> None:
     segmenter = TextDeltaSegmenter()
-    async for segment in _tts_segments(
-        agent.stream_reply_text(thread_id, pcm16, metadata), tts, segmenter
-    ):
+    async for segment in _tts_segments(text_stream, tts, segmenter):
         await _send_audio(websocket, stream_sid, segment)
+
+
+def _recent_visits_for_caller(metadata: dict[str, str]) -> list[Any]:
+    caller = metadata.get("caller", "").strip()
+    if not caller:
+        return []
+    return VisitorStore(settings.visitor_store_path).recent_by_phone(caller, limit=5)
 
 
 async def _replace_response_task(
