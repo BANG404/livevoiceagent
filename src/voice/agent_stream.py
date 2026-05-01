@@ -42,7 +42,7 @@ def build_audio_user_message(
             {
                 "type": "input_audio",
                 "input_audio": {
-                    "data": f"data:audio/wav;base64,{audio_b64}",
+                    "data": audio_b64,
                     "format": "wav",
                 },
             },

@@ -4,24 +4,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from agent.config import Settings
 
 
-def build_agent_model(settings: Settings) -> ChatOpenAI:
+def build_agent_model(settings: Settings) -> ChatGoogleGenerativeAI:
     """Build the configured LangChain chat model.
 
-    OpenAI-compatible models are constructed explicitly so providers such as
-    DashScope can set their own base URL.
+    Gemini models are constructed explicitly so the runtime only depends on
+    the Google GenAI integration package and configured API key.
     """
     kwargs: dict[str, Any] = {"model": settings.agent_model}
 
-    if settings.openai_base_url:
-        kwargs["base_url"] = settings.openai_base_url
-        kwargs["api_key"] = settings.openai_api_key
-        kwargs["stream_usage"] = False
-    elif settings.openai_api_key:
-        kwargs["api_key"] = settings.openai_api_key
+    if settings.google_api_key:
+        kwargs["google_api_key"] = settings.google_api_key
 
-    return ChatOpenAI(**kwargs)
+    return ChatGoogleGenerativeAI(**kwargs)
