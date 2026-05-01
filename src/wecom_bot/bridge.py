@@ -6,20 +6,38 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 from wecom_aibot_sdk import WSClient
 from wecom_aibot_sdk.logger import DefaultLogger
 from wecom_aibot_sdk.types import WSClientOptions, WsFrame
 
 from agent.config import Settings
-from wecom_bot.assistant import GuardQueryAssistantClient, resolve_thread_key
+from wecom_bot.assistant import (
+    GuardQueryAssistantClient,
+    GuardQueryEvent,
+    resolve_thread_key,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _StreamBlock:
+    kind: str
+    content: str
+
+
 def _sdk_log_level(level_name: str) -> int:
     return getattr(logging, level_name.upper(), logging.INFO)
+
+
+def _truncate_text(text: str, limit: int = 120) -> str:
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1] + "…"
 
 
 class WeComGuardQueryBot:
@@ -51,39 +69,35 @@ class WeComGuardQueryBot:
             self.settings.wecom_welcome_message
             or "你好，我是门卫查询助手，直接问我访客登记数据就行。"
         )
-        await self.client.reply_welcome(
-            frame,
-            {
-                "msgtype": "text",
-                "text": {"content": welcome},
-            },
-        )
+        await self.client.reply_welcome(frame, self._markdown_body(welcome))
 
     async def _on_text_message(self, frame: WsFrame) -> None:
         body = frame.body or {}
         stream_id = f"stream_{uuid.uuid4().hex}"
+        blocks = [_StreamBlock(kind="assistant", content="正在思考，请稍等...")]
         await self.client.reply_stream(
             frame,
             stream_id,
-            "正在查询，请稍等...",
+            self._render_blocks(blocks),
             finish=False,
         )
 
         try:
             thread_key = resolve_thread_key(body)
-            final_content = await self._consume_reply_stream(
+            blocks = await self._consume_reply_events(
                 frame,
                 stream_id,
-                self.assistant.stream_reply(thread_key, body),
+                blocks,
+                self.assistant.stream_reply_events(thread_key, body),
             )
         except Exception:
             logger.exception("WeCom text message handling failed.")
-            final_content = "查询失败，请稍后再试。"
+            blocks = [_StreamBlock(kind="assistant", content="查询失败，请稍后再试。")]
 
         await self.client.reply_stream(
             frame,
             stream_id,
-            final_content,
+            self._render_blocks(blocks),
             finish=True,
         )
 
@@ -92,29 +106,80 @@ class WeComGuardQueryBot:
         if body.get("msgtype") == "text":
             return
         await self.client.reply(
-            frame,
-            {
-                "msgtype": "text",
-                "text": {"content": "目前只支持文本查询，请直接发送文字问题。"},
-            },
+            frame, self._markdown_body("目前只支持文本查询，请直接发送文字问题。")
         )
 
-    async def _consume_reply_stream(
+    async def _consume_reply_events(
         self,
         frame: WsFrame,
         stream_id: str,
-        deltas: AsyncIterator[str],
-    ) -> str:
-        accumulated = ""
-        async for delta in deltas:
-            accumulated += delta
-            await self.client.reply_stream(
-                frame,
-                stream_id,
-                accumulated,
-                finish=False,
-            )
-        return accumulated or "暂时没查到结果。"
+        blocks: list[_StreamBlock],
+        events: AsyncIterator[GuardQueryEvent],
+    ) -> list[_StreamBlock]:
+        async for event in events:
+            if event.kind == "text":
+                self._append_text_block(blocks, event.text)
+                await self.client.reply_stream(
+                    frame,
+                    stream_id,
+                    self._render_blocks(blocks),
+                    finish=False,
+                )
+                continue
+
+            if event.kind == "tool_start":
+                detail = f"开始调用 `{event.tool_name}`"
+                if event.tool_input:
+                    detail += f"，输入：`{_truncate_text(event.tool_input, 70)}`"
+                blocks.append(_StreamBlock(kind="tool", content=detail))
+                await self.client.reply_stream(
+                    frame,
+                    stream_id,
+                    self._render_blocks(blocks),
+                    finish=False,
+                )
+                continue
+
+            if event.kind == "tool_end":
+                detail = f"`{event.tool_name or '工具'}` 已返回结果"
+                if event.tool_output:
+                    detail += f"：`{_truncate_text(event.tool_output, 70)}`"
+                blocks.append(_StreamBlock(kind="tool", content=detail))
+                await self.client.reply_stream(
+                    frame,
+                    stream_id,
+                    self._render_blocks(blocks),
+                    finish=False,
+                )
+        if not any(
+            block.kind == "assistant" and block.content.strip() for block in blocks
+        ):
+            return [_StreamBlock(kind="assistant", content="暂时没查到结果。")]
+        return blocks
+
+    def _markdown_body(self, content: str) -> dict[str, object]:
+        return {"msgtype": "markdown", "markdown": {"content": content}}
+
+    def _append_text_block(self, blocks: list[_StreamBlock], text: str) -> None:
+        if blocks and blocks[-1].kind == "assistant":
+            if blocks[-1].content == "正在思考，请稍等...":
+                blocks[-1].content = text
+            else:
+                blocks[-1].content += text
+            return
+        blocks.append(_StreamBlock(kind="assistant", content=text))
+
+    def _render_blocks(self, blocks: list[_StreamBlock]) -> str:
+        rendered: list[str] = []
+        for block in blocks:
+            content = block.content.strip()
+            if not content:
+                continue
+            if block.kind == "tool":
+                rendered.append(f"> {content}")
+            else:
+                rendered.append(content)
+        return "\n\n".join(rendered) or "正在思考，请稍等..."
 
     async def run_forever(self) -> None:
         await self.client.connect_async()

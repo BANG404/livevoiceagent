@@ -13,6 +13,15 @@ from langgraph_sdk.schema import StreamPart
 from agent.config import Settings
 
 
+@dataclass(frozen=True)
+class GuardQueryEvent:
+    kind: str
+    text: str = ""
+    tool_name: str = ""
+    tool_input: str = ""
+    tool_output: str = ""
+
+
 def build_query_user_message(body: Mapping[str, Any]) -> dict[str, str]:
     lines = [
         "请根据以下企业微信门卫查询消息回答：",
@@ -62,6 +71,14 @@ def _is_assistant_message(message: Mapping[str, Any]) -> bool:
     return message_type in {"ai", "aimessage", "aimessagechunk"}
 
 
+def _is_tool_message(message: Mapping[str, Any]) -> bool:
+    role = message.get("role")
+    if role == "tool":
+        return True
+    message_type = str(message.get("type", "")).lower()
+    return message_type in {"tool", "toolmessage"}
+
+
 def _content_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -77,6 +94,85 @@ def _content_text(content: Any) -> str:
                 parts.append(str(block.get("text", "")))
         return "".join(parts)
     return ""
+
+
+def _extract_tool_calls_from_part(part: StreamPart) -> list[GuardQueryEvent]:
+    if not part.event.startswith("updates"):
+        return []
+
+    events: list[GuardQueryEvent] = []
+    for message in _collect_messages(part.data):
+        if _is_assistant_message(message):
+            for tool_call in message.get("tool_calls", []) or []:
+                function = tool_call.get("function", {})
+                name = (
+                    function.get("name")
+                    or tool_call.get("name")
+                    or tool_call.get("tool_name")
+                    or ""
+                )
+                arguments = (
+                    function.get("arguments")
+                    or tool_call.get("args")
+                    or tool_call.get("input")
+                    or ""
+                )
+                call_id = str(tool_call.get("id", "") or "")
+                if name:
+                    events.append(
+                        GuardQueryEvent(
+                            kind="tool_start",
+                            text=call_id,
+                            tool_name=str(name),
+                            tool_input=_stringify(arguments),
+                        )
+                    )
+        elif _is_tool_message(message):
+            tool_name = str(message.get("name", "") or "")
+            tool_call_id = str(message.get("tool_call_id", "") or "")
+            tool_output = _content_text(message.get("content")) or _stringify(
+                message.get("content")
+            )
+            if tool_name or tool_call_id:
+                events.append(
+                    GuardQueryEvent(
+                        kind="tool_end",
+                        text=tool_call_id,
+                        tool_name=tool_name,
+                        tool_output=tool_output,
+                    )
+                )
+    return events
+
+
+def _collect_messages(data: Any) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if any(
+                key in value for key in ("role", "type", "tool_calls", "tool_call_id")
+            ):
+                found.append(value)
+            for child in value.values():
+                _walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                _walk(child)
+        elif isinstance(value, tuple):
+            for child in value:
+                _walk(child)
+
+    _walk(data)
+    return found
+
+
+def _stringify(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
 
 
 @dataclass
@@ -102,12 +198,15 @@ class GuardQueryAssistantClient:
         self._thread_ids[thread_key] = thread_id
         return thread_id
 
-    async def stream_reply(
+    async def stream_reply_events(
         self,
         thread_key: str,
         body: Mapping[str, Any],
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[GuardQueryEvent]:
         thread_id = await self.get_or_create_thread(thread_key)
+        seen_tool_starts: set[str] = set()
+        seen_tool_ends: set[str] = set()
+
         async for part in self.client.runs.stream(
             thread_id=thread_id,
             assistant_id=self.settings.wecom_query_assistant_id,
@@ -117,12 +216,26 @@ class GuardQueryAssistantClient:
                 "chatid": str(body.get("chatid", "") or ""),
                 "userid": str(body.get("from", {}).get("userid", "") or ""),
             },
-            stream_mode="messages-tuple",
+            stream_mode=["messages-tuple", "updates"],
             multitask_strategy="enqueue",
             on_disconnect="cancel",
         ):
             if text := extract_assistant_text_delta(part):
-                yield text
+                yield GuardQueryEvent(kind="text", text=text)
+
+            for event in _extract_tool_calls_from_part(part):
+                event_id = (
+                    event.text or f"{event.kind}:{event.tool_name}:{event.tool_input}"
+                )
+                if event.kind == "tool_start":
+                    if event_id in seen_tool_starts:
+                        continue
+                    seen_tool_starts.add(event_id)
+                elif event.kind == "tool_end":
+                    if event_id in seen_tool_ends:
+                        continue
+                    seen_tool_ends.add(event_id)
+                yield event
 
     async def aclose(self) -> None:
         await self.client.aclose()
