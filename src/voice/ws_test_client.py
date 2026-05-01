@@ -123,7 +123,9 @@ async def run_probe(
 
     async with connect(url, max_size=None) as websocket:
         await websocket.send(
-            json.dumps(build_start_event(stream_sid, call_sid, caller), ensure_ascii=False)
+            json.dumps(
+                build_start_event(stream_sid, call_sid, caller), ensure_ascii=False
+            )
         )
         print(f"connected: {url}")
         print(f"start sent: call_sid={call_sid} caller={caller}")
@@ -143,7 +145,9 @@ async def run_probe(
 
             for _ in range(silence_frames):
                 await websocket.send(
-                    json.dumps(build_media_event(stream_sid, silence_frame), ensure_ascii=False)
+                    json.dumps(
+                        build_media_event(stream_sid, silence_frame), ensure_ascii=False
+                    )
                 )
                 if pace_ms > 0:
                     await asyncio.sleep(pace_ms / 1000)
@@ -158,7 +162,9 @@ async def run_probe(
                 f"turn {index}: received {len(reply_audio) // FRAME_BYTES_PCM16} reply frames"
             )
 
-        await websocket.send(json.dumps(build_stop_event(stream_sid), ensure_ascii=False))
+        await websocket.send(
+            json.dumps(build_stop_event(stream_sid), ensure_ascii=False)
+        )
         print("stop sent")
 
     if output_wav:

@@ -40,15 +40,20 @@ def test_voice_webhook_returns_welcome_and_stream(monkeypatch) -> None:
     )
     client = TestClient(app)
 
-    response = client.post("/voice", data={"CallSid": "CA123", "From": "+8613800001234"})
+    response = client.post(
+        "/voice", data={"CallSid": "CA123", "From": "+8613800001234"}
+    )
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/xml")
     assert "<Say" in response.text
     assert "欢迎致电园区，请准备车牌号。" in response.text
-    assert "<Connect><Stream url=\"wss://example.ngrok-free.app/twilio/media\">" in response.text
-    assert "<Parameter name=\"call_sid\" value=\"CA123\" />" in response.text
-    assert "<Parameter name=\"caller\" value=\"+8613800001234\" />" in response.text
+    assert (
+        '<Connect><Stream url="wss://example.ngrok-free.app/twilio/media">'
+        in response.text
+    )
+    assert '<Parameter name="call_sid" value="CA123" />' in response.text
+    assert '<Parameter name="caller" value="+8613800001234" />' in response.text
 
 
 def test_build_audio_user_message_uses_multimodal_audio_block() -> None:

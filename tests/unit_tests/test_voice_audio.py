@@ -27,7 +27,9 @@ def test_build_vad_falls_back_to_energy_vad_when_silero_is_unavailable(
     assert isinstance(vad, EnergyVad)
 
 
-def test_silero_vad_tracks_stream_start_and_end(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_silero_vad_tracks_stream_start_and_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     events = [{"start": 0}, None, {"end": 512}]
 
     class FakeIterator:

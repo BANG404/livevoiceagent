@@ -587,9 +587,7 @@ async def command_loop(
     print("commands: r=start recording, s=stop turn, q=quit")
 
     while not state.closed:
-        command = normalize_command(
-            await asyncio.to_thread(input, "> ")
-        )
+        command = normalize_command(await asyncio.to_thread(input, "> "))
 
         if command == "r":
             audio_bridge.flush_input()
@@ -616,7 +614,9 @@ async def command_loop(
         if command == "q":
             state.closed = True
             state.recording = False
-            await websocket.send(json.dumps(build_stop_event(stream_sid), ensure_ascii=False))
+            await websocket.send(
+                json.dumps(build_stop_event(stream_sid), ensure_ascii=False)
+            )
             print("closing")
             return
 
@@ -683,7 +683,9 @@ async def run_live_session(
             print(f"connected: {url}")
             print(f"call_sid={call_sid} caller={caller}")
 
-            receiver = asyncio.create_task(receive_agent_audio(websocket, audio_bridge, state))
+            receiver = asyncio.create_task(
+                receive_agent_audio(websocket, audio_bridge, state)
+            )
             sender = asyncio.create_task(
                 send_microphone_audio(
                     websocket,
@@ -731,8 +733,7 @@ def list_devices() -> int:
         import sounddevice as sd
     except ImportError as exc:
         raise RuntimeError(
-            "sounddevice is required for device listing. "
-            "Run `rtk uv sync --dev` first."
+            "sounddevice is required for device listing. Run `rtk uv sync --dev` first."
         ) from exc
 
     print(sd.query_devices())

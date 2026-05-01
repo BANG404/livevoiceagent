@@ -164,5 +164,7 @@ def test_pulseaudio_bridge_start_fails_fast_when_backend_is_unavailable(
 
     bridge = PulseAudioBridge()
 
-    with pytest.raises(RuntimeError, match="PulseAudio command `parec` failed to start"):
+    with pytest.raises(
+        RuntimeError, match="PulseAudio command `parec` failed to start"
+    ):
         bridge.start()
