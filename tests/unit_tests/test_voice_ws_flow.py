@@ -26,6 +26,7 @@ class _ImmediateUtteranceBuffer:
 class _FakeAgent:
     def __init__(self, settings) -> None:
         self.closed = False
+        self.cancelled_threads: list[str] = []
 
     async def create_thread(self, metadata: dict[str, str]) -> str:
         assert metadata["call_sid"] == "CA123"
@@ -57,6 +58,9 @@ class _FakeAgent:
 
     async def aclose(self) -> None:
         self.closed = True
+
+    async def cancel_active_run(self, thread_id: str) -> None:
+        self.cancelled_threads.append(thread_id)
 
 
 class _FakeTts:
@@ -96,7 +100,13 @@ class _FakeStore:
     def __init__(self, path: str) -> None:
         self.path = path
 
-    def recent_by_phone(self, phone: str, limit: int = 5) -> list[VisitorRegistration]:
+    @staticmethod
+    async def recent_by_phone_async(
+        path: str,
+        phone: str,
+        limit: int = 5,
+    ) -> list[VisitorRegistration]:
+        assert path
         assert phone == "+8613800001234"
         assert limit == 5
         return [
@@ -157,8 +167,15 @@ def test_twilio_media_websocket_accepts_local_client(monkeypatch) -> None:
 
 
 def test_twilio_media_websocket_sends_clear_on_barge_in(monkeypatch) -> None:
+    agent_instances: list[_FakeAgent] = []
+
+    def build_agent(settings) -> _FakeAgent:
+        agent = _FakeAgent(settings)
+        agent_instances.append(agent)
+        return agent
+
     monkeypatch.setattr(voice_app_module, "UtteranceBuffer", _BargeInUtteranceBuffer)
-    monkeypatch.setattr(voice_app_module, "LangGraphAudioAgent", _FakeAgent)
+    monkeypatch.setattr(voice_app_module, "LangGraphAudioAgent", build_agent)
     monkeypatch.setattr(voice_app_module, "build_tts", lambda settings: _SlowTts())
     monkeypatch.setattr(voice_app_module, "VisitorStore", _FakeStore)
 
@@ -207,3 +224,6 @@ def test_twilio_media_websocket_sends_clear_on_barge_in(monkeypatch) -> None:
         if next_event != {"event": "clear", "streamSid": "MZ123"}:
             next_event = websocket.receive_json()
         assert next_event == {"event": "clear", "streamSid": "MZ123"}
+
+    assert len(agent_instances) == 1
+    assert agent_instances[0].cancelled_threads == ["thread-1"]

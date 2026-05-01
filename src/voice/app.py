@@ -96,6 +96,8 @@ async def twilio_media(websocket: WebSocket) -> None:
                         response_task,
                         websocket,
                         stream_sid,
+                        agent=agent,
+                        thread_id=thread_id,
                     )
                 if utterance:
                     response_task = await _replace_response_task(
@@ -117,7 +119,13 @@ async def twilio_media(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         return
     finally:
-        await _cancel_response_task(response_task, websocket, stream_sid)
+        await _cancel_response_task(
+            response_task,
+            websocket,
+            stream_sid,
+            agent=agent,
+            thread_id=thread_id,
+        )
         await agent.aclose()
 
 
@@ -180,6 +188,9 @@ async def _cancel_response_task(
     task: asyncio.Task[None] | None,
     websocket: WebSocket,
     stream_sid: str,
+    *,
+    agent: LangGraphAudioAgent | None = None,
+    thread_id: str = "",
 ) -> asyncio.Task[None] | None:
     if task is None:
         return None
@@ -187,6 +198,9 @@ async def _cancel_response_task(
         await _await_response_task(task)
         return None
 
+    if agent is not None and thread_id:
+        with contextlib.suppress(Exception):
+            await agent.cancel_active_run(thread_id)
     task.cancel()
     await _await_response_task(task)
     with contextlib.suppress(RuntimeError, WebSocketDisconnect):
