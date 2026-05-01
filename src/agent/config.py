@@ -26,8 +26,10 @@ def _getfloat(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class Settings:
-    agent_model: str = _getenv("AGENT_MODEL", "gemini-2.5-flash")
+    agent_model: str = _getenv("AGENT_MODEL", "google_genai:gemini-2.5-flash")
     google_api_key: str = _getenv("GOOGLE_API_KEY", "your-google-api-key")
+    openai_api_key: str = _getenv("OPENAI_API_KEY")
+    openai_base_url: str = _getenv("OPENAI_BASE_URL")
     langgraph_api_url: str = _getenv("LANGGRAPH_API_URL", "http://127.0.0.1:2024")
     langgraph_api_key: str = _getenv("LANGGRAPH_API_KEY")
     langgraph_assistant_id: str = _getenv("LANGGRAPH_ASSISTANT_ID", "agent")
