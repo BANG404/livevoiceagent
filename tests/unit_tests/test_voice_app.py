@@ -75,6 +75,7 @@ def test_build_audio_user_message_uses_multimodal_audio_block() -> None:
     assert message["role"] == "user"
     assert message["content"][0]["type"] == "text"
     assert "不要要求系统先做语音转文字" in message["content"][0]["text"]
+    assert "Twilio CallSid" not in message["content"][0]["text"]
     assert message["content"][1]["type"] == "input_audio"
     audio_data = message["content"][1]["input_audio"]
     assert audio_data["format"] == "wav"
@@ -105,6 +106,7 @@ def test_build_recent_visits_user_message_embeds_last_five_visits() -> None:
     assert "近5次来访记录" in message["content"]
     assert "沪A12345" in message["content"]
     assert "请根据以下来电信息直接开始说第一句欢迎语" in message["content"]
+    assert "Twilio CallSid" not in message["content"]
 
 
 def test_build_text_user_message_embeds_transcript_and_call_context() -> None:

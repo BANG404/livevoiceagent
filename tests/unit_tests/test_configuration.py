@@ -148,6 +148,38 @@ async def test_guard_notify_persists_plate_number(tmp_path, monkeypatch) -> None
 
 
 @pytest.mark.anyio
+async def test_guard_notify_reads_caller_and_call_sid_from_metadata(
+    tmp_path, monkeypatch
+) -> None:
+    store_path = tmp_path / "visitors.sqlite3"
+    monkeypatch.setattr(
+        graph_module,
+        "settings",
+        SimpleNamespace(visitor_store_path=str(store_path), guard_wechat_webhook=""),
+    )
+
+    await guard_notify.ainvoke(
+        {
+            "plate_number": "沪B54321",
+            "company": "深蓝物流",
+            "phone": "13900001234",
+            "reason": "提货",
+        },
+        config={
+            "metadata": {
+                "caller": "+8613900001234",
+                "call_sid": "CA123",
+            }
+        },
+    )
+
+    latest = VisitorStore(str(store_path)).latest_by_plate_number("沪B54321")
+    assert latest is not None
+    assert latest.caller == "+8613900001234"
+    assert latest.call_sid == "CA123"
+
+
+@pytest.mark.anyio
 async def test_visitor_store_async_recent_by_phone_returns_latest_five(
     tmp_path,
 ) -> None:

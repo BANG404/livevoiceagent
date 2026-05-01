@@ -5,6 +5,7 @@ import pytest
 from voice.live_ws_client import (
     LocalTurnDetector,
     PulseAudioBridge,
+    choose_audio_bridge,
     normalize_command,
     parse_args,
     parse_device,
@@ -162,9 +163,58 @@ def test_pulseaudio_bridge_start_fails_fast_when_backend_is_unavailable(
     monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/fake")
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
-    bridge = PulseAudioBridge()
+    bridge = PulseAudioBridge(startup_retries=1)
 
     with pytest.raises(
         RuntimeError, match="PulseAudio command `parec` failed to start"
     ):
         bridge.start()
+
+
+def test_choose_audio_bridge_prefers_pulseaudio_on_wsl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pulse_bridge = object()
+    local_called = False
+
+    def fake_pulse_bridge(**_kwargs: object) -> object:
+        return pulse_bridge
+
+    def fake_local_bridge(**_kwargs: object) -> object:
+        nonlocal local_called
+        local_called = True
+        return object()
+
+    monkeypatch.setattr("voice.live_ws_client.is_wsl_pulse_available", lambda: True)
+    monkeypatch.setattr("voice.live_ws_client.PulseAudioBridge", fake_pulse_bridge)
+    monkeypatch.setattr("voice.live_ws_client.LocalAudioBridge", fake_local_bridge)
+
+    bridge, backend = choose_audio_bridge(
+        input_device="RDPSource",
+        output_device="RDPSink",
+    )
+
+    assert bridge is pulse_bridge
+    assert backend == "pulseaudio"
+    assert local_called is False
+
+
+def test_choose_audio_bridge_falls_back_to_sounddevice_when_pulse_fails_on_wsl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local_bridge = object()
+
+    def fake_pulse_bridge(**_kwargs: object) -> object:
+        raise RuntimeError("pulse failed")
+
+    def fake_local_bridge(**_kwargs: object) -> object:
+        return local_bridge
+
+    monkeypatch.setattr("voice.live_ws_client.is_wsl_pulse_available", lambda: True)
+    monkeypatch.setattr("voice.live_ws_client.PulseAudioBridge", fake_pulse_bridge)
+    monkeypatch.setattr("voice.live_ws_client.LocalAudioBridge", fake_local_bridge)
+
+    bridge, backend = choose_audio_bridge()
+
+    assert bridge is local_bridge
+    assert backend == "sounddevice"
