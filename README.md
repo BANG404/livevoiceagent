@@ -48,9 +48,8 @@ sudo apt-get install portaudio19-dev
 Required environment variables:
 
 ```bash
-AGENT_MODEL=qwen3.5-omni-flash
-OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-OPENAI_API_KEY=sk-your-dashscope-api-key
+AGENT_MODEL=gemini-2.5-flash
+GOOGLE_API_KEY=your-google-api-key
 LANGGRAPH_API_URL=http://127.0.0.1:2024
 LANGGRAPH_ASSISTANT_ID=agent
 PUBLIC_BASE_URL=https://your-ngrok-url
@@ -63,9 +62,9 @@ AGENT_VOICE=zf_xiaobei
 VAD_PROVIDER=silero
 ```
 
-For DashScope, keep the OpenAI-compatible base URL at `/compatible-mode/v1`. The model name in `AGENT_MODEL` must match the model identifier exposed by the provider; this repo uses LangChain's `ChatOpenAI` adapter with the configured OpenAI-compatible environment.
+This repo uses LangChain's `ChatGoogleGenerativeAI` adapter for Gemini. The model name in `AGENT_MODEL` must match the Gemini model identifier available to your Google AI Studio API key.
 
-The Twilio voice path currently sends caller audio to the agent as a Base64 Data URL in an `input_audio` block. Use an audio-capable chat model such as `qwen3.5-omni-flash`; text-only local models need a separate STT step before the live phone flow.
+The Twilio voice path currently sends caller audio to the agent as a Base64 Data URL in an `input_audio` block. Use an audio-capable Gemini model such as `gemini-2.5-flash`; text-only local models need a separate STT step before the live phone flow.
 
 Inbound calls first play the configured `TWILIO_WELCOME_MESSAGE` through TwiML `<Say>`, then switch into bidirectional Media Streams at `/twilio/media`.
 
