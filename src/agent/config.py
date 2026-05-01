@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+load_dotenv(override=False)
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -40,8 +40,17 @@ class Settings:
     langgraph_api_url: str = _getenv("LANGGRAPH_API_URL", "http://127.0.0.1:2024")
     langgraph_api_key: str = _getenv("LANGGRAPH_API_KEY")
     langgraph_assistant_id: str = _getenv("LANGGRAPH_ASSISTANT_ID", "agent")
+    wecom_query_assistant_id: str = _getenv("WECOM_QUERY_ASSISTANT_ID", "guard_query")
     public_base_url: str = _getenv("PUBLIC_BASE_URL", "http://localhost:8000")
     guard_wechat_webhook: str = _getenv("GUARD_WECHAT_WEBHOOK")
+    wecom_bot_id: str = _getenv("WECOM_BOT_ID")
+    wecom_bot_secret: str = _getenv("WECOM_BOT_SECRET")
+    wecom_ws_url: str = _getenv("WECOM_WS_URL", "wss://openws.work.weixin.qq.com")
+    wecom_welcome_message: str = _getenv(
+        "WECOM_WELCOME_MESSAGE", "你好，我是门卫查询助手，直接问我访客登记数据就行。"
+    )
+    wecom_heartbeat_seconds: int = _getint("WECOM_HEARTBEAT_SECONDS", 30)
+    wecom_log_level: str = _getenv("WECOM_LOG_LEVEL", "INFO")
     visitor_store_path: str = _getenv("VISITOR_STORE_PATH", "data/visitors.sqlite3")
     park_name: str = _getenv("PARK_NAME", "园区")
     agent_voice: str = _getenv("AGENT_VOICE", "zf_xiaobei")
