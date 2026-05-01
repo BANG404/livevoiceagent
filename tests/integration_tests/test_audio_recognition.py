@@ -17,9 +17,9 @@ def _skip_unavailable_model() -> None:
             allow_module_level=True,
         )
 
-    if not settings.openai_api_key or settings.openai_api_key.startswith("sk-your-"):
+    if not settings.google_api_key or settings.google_api_key == "your-google-api-key":
         pytest.skip(
-            "Set OPENAI_API_KEY to run OpenAI-compatible integration tests.",
+            "Set GOOGLE_API_KEY to run Gemini integration tests.",
             allow_module_level=True,
         )
 
@@ -49,7 +49,7 @@ async def test_langchain_model_recognizes_testvoice_audio() -> None:
                     {
                         "type": "input_audio",
                         "input_audio": {
-                            "data": f"data:audio/m4a;base64,{_fixture_audio_base64()}",
+                            "data": _fixture_audio_base64(),
                             "format": "m4a",
                         },
                     },
