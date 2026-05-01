@@ -10,3 +10,6 @@ build/
 dist/
 .DS_Store
 .langgraph_api/
+TODO/
+docs/
+data/
