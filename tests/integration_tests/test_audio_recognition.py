@@ -17,6 +17,14 @@ def _skip_unavailable_model() -> None:
             allow_module_level=True,
         )
 
+    if settings.agent_model.startswith("openai:"):
+        if not settings.openai_api_key:
+            pytest.skip(
+                "Set OPENAI_API_KEY to run OpenAI integration tests.",
+                allow_module_level=True,
+            )
+        return
+
     if not settings.google_api_key or settings.google_api_key == "your-google-api-key":
         pytest.skip(
             "Set GOOGLE_API_KEY to run Gemini integration tests.",
@@ -25,7 +33,9 @@ def _skip_unavailable_model() -> None:
 
 
 def _fixture_audio_base64() -> str:
-    audio_path = Path(__file__).resolve().parents[1] / "fixtures" / "audio" / "testvoice.m4a"
+    audio_path = (
+        Path(__file__).resolve().parents[1] / "fixtures" / "audio" / "testvoice.m4a"
+    )
     return base64.b64encode(audio_path.read_bytes()).decode("ascii")
 
 
