@@ -26,6 +26,7 @@ VOICE_AUDIO_INSTRUCTION = (
     "不要要求系统先做语音转文字。回复要短、自然、适合直接转成电话语音。"
 )
 
+
 def build_audio_user_message(
     pcm16: bytes,
     metadata: Mapping[str, str] | None = None,
