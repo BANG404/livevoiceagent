@@ -3,7 +3,8 @@
   "python_version": "3.13",
   "dependencies": ["."],
   "graphs": {
-    "agent": "agent.graph:graph"
+    "agent": "agent.graph:graph",
+    "guard_query": "agent.query_graph:graph"
   },
   "env": ".env",
   "image_distro": "wolfi"

@@ -1,4 +1,4 @@
-.PHONY: help install sync dev run voice test integration-tests lint format
+.PHONY: help install sync dev run voice wecom-bot test integration-tests lint format
 
 help:
 	@echo 'Targets:'
@@ -7,6 +7,7 @@ help:
 	@echo '  dev                 Sync deps and start LangGraph + FastAPI with overmind'
 	@echo '  run                 Start the local LangGraph dev server'
 	@echo '  voice               Start the Twilio voice webhook server'
+	@echo '  wecom-bot           Start the Enterprise WeChat long-connection query bot'
 	@echo '  test                Run unit tests'
 	@echo '  integration-tests   Run integration tests'
 	@echo '  lint                Run Ruff checks'
@@ -31,6 +32,9 @@ run:
 
 voice:
 	uv run uvicorn voice.app:app --host 0.0.0.0 --port 8000 --reload
+
+wecom-bot:
+	uv run python -m wecom_bot.main
 
 test:
 	uv run python -m pytest tests/unit_tests -q

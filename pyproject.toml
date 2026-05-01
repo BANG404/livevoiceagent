@@ -23,6 +23,8 @@ dependencies = [
     "silero-vad>=6.0.0",
     "twilio>=9.3.0",
     "uvicorn[standard]>=0.32.0",
+    "wecom-aibot-sdk-python>=0.1.6",
+    "websockets>=15.0.1",
 ]
 
 [build-system]
@@ -38,5 +40,5 @@ dev = [
 ]
 
 [tool.uv.build-backend]
-module-name = ["agent", "voice"]
+module-name = ["agent", "voice", "wecom_bot"]
 source-include = ["langgraph.json", ".env.example", "Makefile", "tests/**"]
