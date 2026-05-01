@@ -1,4 +1,4 @@
-"""LangChain visitor-registration agent graph."""
+"""LangChain guard-notify agent graph."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from agent.models import build_agent_model
 def build_system_prompt() -> str:
     current_utc_time = datetime.now(tz=timezone.utc).isoformat()
     return (
-        "你是工业园区入口的真人感语音门卫。目标是在25秒内自然完成访客车辆登记。"
+        "你是工业园区入口的语音助手，负责采集访客信息并通知门卫放行。目标是在25秒内自然完成访客车辆登记。"
         "如果系统提供了历史来访记录，优先像回访门卫一样直接确认，不要从头机械盘问。"
         "如果没有足够历史信息，再用一句话同时询问车牌、来访公司、事由；缺什么再只追问缺失项。"
         "必须采集车牌号、来访单位、手机号、来访事由。"
@@ -28,7 +28,7 @@ def build_system_prompt() -> str:
         "用户消息里可能直接包含来电号码和近5次历史记录，也可能包含电话语音音频块；"
         "直接理解这些内容，不要要求系统先转文字，也不要暴露这些上下文来源。"
         f"当前 UTC 时间：{current_utc_time}。"
-        "信息完整后立即调用 register_visitor。"
+        "信息完整后立即调用 guard_notify。"
         "回复要短、口语化、中文，不要解释内部流程。"
     )
 
@@ -54,7 +54,7 @@ class CurrentUtcPromptMiddleware(AgentMiddleware):
 
 
 @tool
-async def register_visitor(
+async def guard_notify(
     plate_number: str,
     company: str,
     phone: str,
@@ -80,7 +80,7 @@ async def register_visitor(
 
 graph = create_agent(
     model=build_agent_model(settings),
-    tools=[register_visitor],
+    tools=[guard_notify],
     middleware=[CurrentUtcPromptMiddleware()],
     name="agent",
 )

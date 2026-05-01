@@ -1,4 +1,6 @@
-.PHONY: help install sync dev run voice wecom-bot test integration-tests lint format
+CALLER ?= +8613800001234
+
+.PHONY: help install sync dev run voice ws-chat wecom-bot test integration-tests lint format
 
 help:
 	@echo 'Targets:'
@@ -7,6 +9,7 @@ help:
 	@echo '  dev                 Sync deps and start LangGraph + FastAPI with overmind'
 	@echo '  run                 Start the local LangGraph dev server'
 	@echo '  voice               Start the Twilio voice webhook server'
+	@echo '  ws-chat             Start the local WebSocket voice chat client'
 	@echo '  wecom-bot           Start the Enterprise WeChat long-connection query bot'
 	@echo '  test                Run unit tests'
 	@echo '  integration-tests   Run integration tests'
@@ -32,6 +35,9 @@ run:
 
 voice:
 	uv run uvicorn voice.app:app --host 0.0.0.0 --port 8000 --reload
+
+ws-chat:
+	uv run python scripts/live_ws_voice_chat.py --caller $(CALLER)
 
 wecom-bot:
 	uv run python -m wecom_bot.main

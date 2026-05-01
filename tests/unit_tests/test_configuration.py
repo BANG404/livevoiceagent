@@ -8,7 +8,7 @@ from agent.domain import VisitorRegistration, VisitorStore
 from agent.graph import (
     build_system_prompt,
     graph,
-    register_visitor,
+    guard_notify,
 )
 from agent.query_graph import (
     count_visitor_registrations,
@@ -124,7 +124,7 @@ def test_visitor_store_query_and_analytics(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_register_visitor_persists_plate_number(tmp_path, monkeypatch) -> None:
+async def test_guard_notify_persists_plate_number(tmp_path, monkeypatch) -> None:
     store_path = tmp_path / "visitors.sqlite3"
     monkeypatch.setattr(
         graph_module,
@@ -132,7 +132,7 @@ async def test_register_visitor_persists_plate_number(tmp_path, monkeypatch) -> 
         SimpleNamespace(visitor_store_path=str(store_path), guard_wechat_webhook=""),
     )
 
-    result = await register_visitor.ainvoke(
+    result = await guard_notify.ainvoke(
         {
             "plate_number": "沪A12345",
             "company": "蓝色鲸鱼科技",
@@ -212,7 +212,7 @@ async def test_guard_query_tools_use_visitor_store(tmp_path, monkeypatch) -> Non
     assert '"total_visits": 2' in repeat_payload
 
 
-def test_register_visitor_storage_is_queryable_by_caller_id(
+def test_guard_notify_storage_is_queryable_by_caller_id(
     tmp_path, monkeypatch
 ) -> None:
     store_path = tmp_path / "visitors.sqlite3"

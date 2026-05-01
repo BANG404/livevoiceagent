@@ -165,5 +165,5 @@ make lint
 ## Demo Notes
 
 - Fast path target: greeting asks for plate, company, and reason in one sentence; Agent only asks for missing fields.
-- A complete registration calls `register_visitor`, writes `data/visitors.sqlite3`, and posts a WeCom text message.
+- A complete registration calls `guard_notify`, writes `data/visitors.sqlite3`, and posts a WeCom text message.
 - Repeat-visitor support preloads the caller's last 5 visits by phone into the agent's opening turn, so the agent can start with a direct revisit confirmation instead of a static Twilio greeting.
