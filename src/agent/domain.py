@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -129,6 +130,14 @@ class VisitorStore:
             )
             connection.commit()
 
+    @classmethod
+    async def append_async(cls, path: str, registration: VisitorRegistration) -> None:
+        await asyncio.to_thread(cls._append_at_path, path, registration)
+
+    @classmethod
+    def _append_at_path(cls, path: str, registration: VisitorRegistration) -> None:
+        cls(path).append(registration)
+
     def latest_by_phone(self, phone: str) -> VisitorRegistration | None:
         return self.latest_by_phone_or_plate(phone=phone)
 
@@ -193,3 +202,22 @@ class VisitorStore:
                 (normalized_phone, limit),
             ).fetchall()
         return [self._row_to_registration(row) for row in rows]
+
+    @classmethod
+    async def recent_by_phone_async(
+        cls,
+        path: str,
+        phone: str,
+        *,
+        limit: int = 5,
+    ) -> list[VisitorRegistration]:
+        return await asyncio.to_thread(cls._recent_by_phone_at_path, path, phone, limit)
+
+    @classmethod
+    def _recent_by_phone_at_path(
+        cls,
+        path: str,
+        phone: str,
+        limit: int,
+    ) -> list[VisitorRegistration]:
+        return cls(path).recent_by_phone(phone, limit=limit)

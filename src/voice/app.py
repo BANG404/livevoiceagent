@@ -76,7 +76,7 @@ async def twilio_media(websocket: WebSocket) -> None:
                     event["start"].get("customParameters", {})
                 )
                 thread_id = await agent.create_thread(metadata)
-                recent_visits = _recent_visits_for_caller(metadata)
+                recent_visits = await _recent_visits_for_caller(metadata)
                 response_task = await _replace_response_task(
                     response_task,
                     _stream_agent_reply(
@@ -152,11 +152,15 @@ async def _stream_agent_reply(
         await _send_audio(websocket, stream_sid, segment)
 
 
-def _recent_visits_for_caller(metadata: dict[str, str]) -> list[Any]:
+async def _recent_visits_for_caller(metadata: dict[str, str]) -> list[Any]:
     caller = metadata.get("caller", "").strip()
     if not caller:
         return []
-    return VisitorStore(settings.visitor_store_path).recent_by_phone(caller, limit=5)
+    return await VisitorStore.recent_by_phone_async(
+        settings.visitor_store_path,
+        caller,
+        limit=5,
+    )
 
 
 async def _replace_response_task(

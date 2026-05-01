@@ -6,6 +6,7 @@ import base64
 from collections.abc import Iterable
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
+import logging
 
 from langgraph_sdk import get_client
 from langgraph_sdk.client import LangGraphClient
@@ -13,12 +14,20 @@ from langgraph_sdk.schema import StreamPart
 
 from agent.config import Settings
 from agent.domain import VisitorRegistration
-from voice.speech import pcm16_wav_bytes
+from voice.speech import SpeechToText, build_stt, pcm16_wav_bytes
+
+
+logger = logging.getLogger(__name__)
 
 
 VOICE_AUDIO_INSTRUCTION = (
     "这是一段访客电话语音。请直接理解音频内容并继续完成园区访客登记；"
     "不要要求系统先做语音转文字。回复要短、自然、适合直接转成电话语音。"
+)
+
+VOICE_TEXT_INSTRUCTION = (
+    "这是一段访客电话语音的转写文本。请把它当作用户刚刚在电话里说的话，"
+    "继续完成园区访客登记。回复要短、自然、适合直接转成电话语音。"
 )
 
 
@@ -83,9 +92,24 @@ def build_recent_visits_user_message(
     return {"role": "user", "content": "\n".join(lines)}
 
 
+def build_text_user_message(
+    transcript: str,
+    metadata: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    metadata = metadata or {}
+    context_lines = [VOICE_TEXT_INSTRUCTION]
+    if caller := metadata.get("caller"):
+        context_lines.append(f"来电号码：{caller}。")
+    if call_sid := metadata.get("call_sid"):
+        context_lines.append(f"Twilio CallSid：{call_sid}。")
+    context_lines.append(f"访客本轮语音转写：{transcript}")
+    return {"role": "user", "content": "\n".join(context_lines)}
+
+
 class LangGraphAudioAgent:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.stt: SpeechToText | None = build_stt(settings)
         self.client: LangGraphClient = get_client(
             url=settings.langgraph_api_url,
             api_key=settings.langgraph_api_key or None,
@@ -107,11 +131,26 @@ class LangGraphAudioAgent:
         pcm16: bytes,
         metadata: Mapping[str, str],
     ) -> AsyncIterator[str]:
+        if self.stt is not None:
+            try:
+                transcript = await self.stt.transcribe_pcm16(pcm16)
+            except Exception:
+                logger.exception("DashScope ASR transcription failed.")
+                yield "抱歉，刚才没听清，请再说一遍。"
+                return
+
+            if not transcript:
+                yield "抱歉，刚才没听清，请再说一遍。"
+                return
+            message = build_text_user_message(transcript, metadata)
+        else:
+            message = build_audio_user_message(pcm16, metadata)
+
         async for part in self.client.runs.stream(
             thread_id=thread_id,
             assistant_id=self.settings.langgraph_assistant_id,
             input={
-                "messages": [build_audio_user_message(pcm16, metadata)],
+                "messages": [message],
                 "call_sid": metadata.get("call_sid"),
                 "caller": metadata.get("caller"),
             },
@@ -205,7 +244,9 @@ __all__ = [
     "LangGraphAudioAgent",
     "LangGraphClient",
     "VOICE_AUDIO_INSTRUCTION",
+    "VOICE_TEXT_INSTRUCTION",
     "build_audio_user_message",
     "build_recent_visits_user_message",
+    "build_text_user_message",
     "extract_assistant_text_delta",
 ]

@@ -7,10 +7,12 @@ TTS replaceable while the visitor workflow stays stable.
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import logging
 import wave
 from collections.abc import AsyncIterator
+from typing import Any
 
 import numpy as np
 
@@ -42,6 +44,58 @@ class TextToSpeech:
         pcm16 = await self.synthesize_pcm16(text)
         if pcm16:
             yield pcm16
+
+
+class SpeechToText:
+    async def transcribe_pcm16(self, pcm16: bytes, sample_rate: int = 8000) -> str:
+        raise NotImplementedError
+
+
+class DashScopeSpeechToText(SpeechToText):
+    def __init__(self, settings: Settings) -> None:
+        import dashscope
+
+        if not settings.dashscope_api_key:
+            raise ValueError(
+                "DASHSCOPE_API_KEY is required when STT_PROVIDER=dashscope"
+            )
+
+        self._dashscope = dashscope
+        self.settings = settings
+        self._dashscope.base_http_api_url = settings.dashscope_base_url
+
+    async def transcribe_pcm16(self, pcm16: bytes, sample_rate: int = 8000) -> str:
+        wav_bytes = pcm16_wav_bytes(pcm16, sample_rate=sample_rate)
+        audio_data = base64.b64encode(wav_bytes).decode("ascii")
+        messages = [
+            {
+                "role": "system",
+                "content": [{"text": ""}],
+            },
+            {
+                "role": "user",
+                "content": [{"audio": f"data:audio/wav;base64,{audio_data}"}],
+            },
+        ]
+
+        response = await asyncio.to_thread(
+            self._dashscope.MultiModalConversation.call,
+            api_key=self.settings.dashscope_api_key,
+            model=self.settings.dashscope_asr_model,
+            messages=messages,
+            result_format="message",
+            asr_options=self._asr_options(),
+        )
+        return _extract_dashscope_asr_text(response)
+
+    def _asr_options(self) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "enable_lid": True,
+            "enable_itn": False,
+        }
+        if self.settings.dashscope_asr_language:
+            options["language"] = self.settings.dashscope_asr_language
+        return options
 
 
 class SilenceTextToSpeech(TextToSpeech):
@@ -134,6 +188,14 @@ def build_tts(settings: Settings) -> TextToSpeech:
     return SilenceTextToSpeech()
 
 
+def build_stt(settings: Settings) -> SpeechToText | None:
+    if not settings.stt_provider:
+        return None
+    if settings.stt_provider == "dashscope":
+        return DashScopeSpeechToText(settings)
+    raise ValueError(f"Unsupported STT_PROVIDER: {settings.stt_provider!r}")
+
+
 def _resample_linear(
     waveform: np.ndarray, source_rate: int, target_rate: int
 ) -> np.ndarray:
@@ -150,3 +212,38 @@ def _waveform_to_twilio_pcm16(waveform: np.ndarray) -> bytes:
     waveform_8k = _resample_linear(waveform, 24000, 8000)
     waveform_8k = np.clip(waveform_8k, -1.0, 1.0)
     return (waveform_8k * 32767).astype("<i2").tobytes()
+
+
+def _extract_dashscope_asr_text(response: Any) -> str:
+    if isinstance(response, dict):
+        choices = (
+            response.get("output", {}).get("choices", [])
+            if isinstance(response.get("output"), dict)
+            else []
+        )
+        if choices:
+            return _extract_text_from_dashscope_content(
+                choices[0].get("message", {}).get("content", [])
+            )
+
+    output = getattr(response, "output", None)
+    choices = getattr(output, "choices", None)
+    if choices:
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", None)
+        return _extract_text_from_dashscope_content(content)
+    return ""
+
+
+def _extract_text_from_dashscope_content(content: Any) -> str:
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+            else:
+                text = getattr(block, "text", None)
+            if text:
+                parts.append(str(text))
+        return "".join(parts).strip()
+    return ""

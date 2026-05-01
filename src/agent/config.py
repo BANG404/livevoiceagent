@@ -30,6 +30,13 @@ class Settings:
     google_api_key: str = _getenv("GOOGLE_API_KEY", "your-google-api-key")
     openai_api_key: str = _getenv("OPENAI_API_KEY")
     openai_base_url: str = _getenv("OPENAI_BASE_URL")
+    stt_provider: str = _getenv("STT_PROVIDER")
+    dashscope_api_key: str = _getenv("DASHSCOPE_API_KEY")
+    dashscope_base_url: str = _getenv(
+        "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"
+    )
+    dashscope_asr_model: str = _getenv("DASHSCOPE_ASR_MODEL", "qwen3-asr-flash")
+    dashscope_asr_language: str = _getenv("DASHSCOPE_ASR_LANGUAGE")
     langgraph_api_url: str = _getenv("LANGGRAPH_API_URL", "http://127.0.0.1:2024")
     langgraph_api_key: str = _getenv("LANGGRAPH_API_KEY")
     langgraph_assistant_id: str = _getenv("LANGGRAPH_ASSISTANT_ID", "agent")
