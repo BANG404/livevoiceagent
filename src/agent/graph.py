@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelRequest
 from langchain_core.messages import SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
 from agent.config import settings
@@ -53,16 +54,31 @@ class CurrentUtcPromptMiddleware(AgentMiddleware):
         return await handler(_with_current_system_prompt(request))
 
 
+def _metadata_value(config: RunnableConfig, key: str) -> str | None:
+    metadata = config.get("metadata") or {}
+    if not isinstance(metadata, Mapping):
+        return None
+
+    value = metadata.get(key)
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    return text or None
+
+
 @tool
 async def guard_notify(
     plate_number: str,
     company: str,
     phone: str,
     reason: str,
+    config: RunnableConfig = None,
     caller: str | None = None,
-    call_sid: str | None = None,
 ) -> str:
     """Persist a complete visitor registration and notify the guard."""
+    caller = caller or _metadata_value(config, "caller")
+    call_sid = _metadata_value(config, "call_sid")
     registration = VisitorRegistration(
         plate_number=plate_number,
         company=company,
