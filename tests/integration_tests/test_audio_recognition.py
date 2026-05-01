@@ -33,10 +33,20 @@ def _skip_unavailable_model() -> None:
 
 
 def _fixture_audio_base64() -> str:
-    audio_path = (
-        Path(__file__).resolve().parents[1] / "fixtures" / "audio" / "testvoice.m4a"
-    )
-    return base64.b64encode(audio_path.read_bytes()).decode("ascii")
+    fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures" / "audio"
+    wav_path = fixtures_dir / "testvoice.wav"
+    if wav_path.exists():
+        audio_b64 = base64.b64encode(wav_path.read_bytes()).decode("ascii")
+        return f"data:audio/wav;base64,{audio_b64}"
+
+    if settings.agent_model.startswith("openai:"):
+        pytest.skip(
+            "OpenAI audio inputs now require a WAV fixture; add tests/fixtures/audio/testvoice.wav to run this test.",
+        )
+
+    audio_path = fixtures_dir / "testvoice.m4a"
+    audio_b64 = base64.b64encode(audio_path.read_bytes()).decode("ascii")
+    return f"data:audio/m4a;base64,{audio_b64}"
 
 
 _skip_unavailable_model()

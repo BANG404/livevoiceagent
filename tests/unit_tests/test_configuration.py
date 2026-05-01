@@ -7,9 +7,7 @@ from langgraph.pregel import Pregel
 from agent.domain import VisitorRegistration, VisitorStore
 from agent.graph import (
     build_system_prompt,
-    calculator,
     graph,
-    lookup_recent_visit,
     register_visitor,
 )
 from voice.audio import UtteranceBuffer, mulaw_payload_to_pcm16, pcm16_to_mulaw_payload
@@ -19,15 +17,11 @@ def test_graph_compiles() -> None:
     assert isinstance(graph, Pregel)
 
 
-def test_calculator_tool() -> None:
-    result = calculator.invoke({"expression": "2 + 3 * 4"})
-    assert result == "14"
-
-
 def test_system_prompt_includes_current_utc_time() -> None:
     prompt = build_system_prompt()
     assert "当前 UTC 时间：" in prompt
     assert "T" in prompt
+    assert "历史来访记录" in prompt
 
 
 def test_visitor_guard_message() -> None:
@@ -44,7 +38,7 @@ def test_visitor_guard_message() -> None:
 
 
 def test_visitor_store_latest_by_phone_or_plate(tmp_path) -> None:
-    store = VisitorStore(str(tmp_path / "visitors.jsonl"))
+    store = VisitorStore(str(tmp_path / "visitors.sqlite3"))
     store.append(
         VisitorRegistration(
             plate_number="沪A12345",
@@ -63,34 +57,32 @@ def test_visitor_store_latest_by_phone_or_plate(tmp_path) -> None:
     )
 
     assert store.latest_by_phone("13800001234").company == "蓝色鲸鱼科技"
+    assert store.latest_by_phone("+86 13900005678").company == "绿色海豚贸易"
     assert store.latest_by_plate_number("苏b67890").phone == "13900005678"
 
 
-def test_lookup_recent_visit_supports_plate_number(tmp_path, monkeypatch) -> None:
-    store_path = tmp_path / "visitors.jsonl"
-    VisitorStore(str(store_path)).append(
-        VisitorRegistration(
-            plate_number="沪A12345",
-            company="蓝色鲸鱼科技",
-            phone="13800001234",
-            reason="送货",
+def test_visitor_store_recent_by_phone_returns_latest_five(tmp_path) -> None:
+    store = VisitorStore(str(tmp_path / "visitors.sqlite3"))
+    for index in range(6):
+        store.append(
+            VisitorRegistration(
+                plate_number=f"沪A1234{index}",
+                company="蓝色鲸鱼科技",
+                phone="13800001234",
+                reason=f"送货{index}",
+            )
         )
-    )
-    monkeypatch.setattr(
-        graph_module,
-        "settings",
-        SimpleNamespace(visitor_store_path=str(store_path)),
-    )
 
-    result = lookup_recent_visit.invoke({"plate_number": "沪A12345"})
+    recent = store.recent_by_phone("+86 13800001234", limit=5)
 
-    assert "沪A12345" in result
-    assert "蓝色鲸鱼科技" in result
+    assert len(recent) == 5
+    assert recent[0].reason == "送货5"
+    assert recent[-1].reason == "送货1"
 
 
 @pytest.mark.anyio
 async def test_register_visitor_persists_plate_number(tmp_path, monkeypatch) -> None:
-    store_path = tmp_path / "visitors.jsonl"
+    store_path = tmp_path / "visitors.sqlite3"
     monkeypatch.setattr(
         graph_module,
         "settings",
@@ -110,6 +102,27 @@ async def test_register_visitor_persists_plate_number(tmp_path, monkeypatch) -> 
     assert result == "已登记；未配置企业微信 Webhook，暂未发送门卫通知"
     assert latest is not None
     assert latest.phone == "13800001234"
+
+
+def test_register_visitor_storage_is_queryable_by_caller_id(tmp_path, monkeypatch) -> None:
+    store_path = tmp_path / "visitors.sqlite3"
+    monkeypatch.setattr(
+        graph_module,
+        "settings",
+        SimpleNamespace(visitor_store_path=str(store_path), guard_wechat_webhook=""),
+    )
+    VisitorStore(str(store_path)).append(
+        VisitorRegistration(
+            plate_number="沪A12345",
+            company="蓝色鲸鱼科技",
+            phone="13800001234",
+            reason="送货",
+        )
+    )
+
+    latest = VisitorStore(str(store_path)).latest_by_phone("+86 13800001234")
+    assert latest is not None
+    assert latest.plate_number == "沪A12345"
 
 
 def test_twilio_mulaw_round_trip() -> None:

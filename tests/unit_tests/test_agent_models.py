@@ -46,6 +46,20 @@ def test_build_agent_model_uses_chat_openai_for_openai_prefix() -> None:
     assert model.model_name == "gpt-4o-mini"
     assert model.openai_api_key.get_secret_value() == "test-openai-key"
     assert str(model.openai_api_base) == "https://openai.example.com/v1"
+    assert model.model_kwargs == {}
+
+
+def test_build_agent_model_sets_text_modalities_for_openai_audio_models() -> None:
+    model = build_agent_model(
+        Settings(
+            agent_model="openai:step-audio-2-mini",
+            openai_api_key="test-openai-key",
+        )
+    )
+
+    assert isinstance(model, ChatOpenAI)
+    assert model.model_name == "step-audio-2-mini"
+    assert model.model_kwargs == {"modalities": ["text"]}
 
 
 def test_build_agent_model_rejects_unknown_provider_prefix() -> None:

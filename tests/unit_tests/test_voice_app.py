@@ -5,7 +5,12 @@ from io import BytesIO
 from fastapi.testclient import TestClient
 from langgraph_sdk.schema import StreamPart
 
-from voice.agent_stream import build_audio_user_message, extract_assistant_text_delta
+from agent.domain import VisitorRegistration
+from voice.agent_stream import (
+    build_audio_user_message,
+    build_recent_visits_user_message,
+    extract_assistant_text_delta,
+)
 import voice.app as voice_app_module
 from voice.app import TextDeltaSegmenter, app, _parse_custom_parameters
 
@@ -25,7 +30,7 @@ def test_parse_custom_parameters_from_parameter_list() -> None:
     }
 
 
-def test_voice_webhook_returns_welcome_and_stream(monkeypatch) -> None:
+def test_voice_webhook_returns_stream_without_twilio_say(monkeypatch) -> None:
     monkeypatch.setattr(
         voice_app_module,
         "settings",
@@ -34,7 +39,6 @@ def test_voice_webhook_returns_welcome_and_stream(monkeypatch) -> None:
             (),
             {
                 "websocket_base_url": "wss://example.ngrok-free.app",
-                "twilio_welcome_message": "欢迎致电园区，请准备车牌号。",
             },
         )(),
     )
@@ -46,8 +50,7 @@ def test_voice_webhook_returns_welcome_and_stream(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/xml")
-    assert "<Say" in response.text
-    assert "欢迎致电园区，请准备车牌号。" in response.text
+    assert "<Say" not in response.text
     assert (
         '<Connect><Stream url="wss://example.ngrok-free.app/twilio/media">'
         in response.text
@@ -68,12 +71,31 @@ def test_build_audio_user_message_uses_multimodal_audio_block() -> None:
     assert message["content"][1]["type"] == "input_audio"
     audio_data = message["content"][1]["input_audio"]
     assert audio_data["format"] == "wav"
-    assert "data:audio/wav;base64," not in audio_data["data"]
+    assert audio_data["data"].startswith("data:audio/wav;base64,")
 
-    wav_bytes = base64.b64decode(audio_data["data"])
+    wav_bytes = base64.b64decode(audio_data["data"].removeprefix("data:audio/wav;base64,"))
     with wave.open(BytesIO(wav_bytes), "rb") as wav:
         assert wav.getframerate() == 8000
         assert wav.getnchannels() == 1
+
+
+def test_build_recent_visits_user_message_embeds_last_five_visits() -> None:
+    message = build_recent_visits_user_message(
+        {"call_sid": "CA123", "caller": "+8613800001234"},
+        [
+            VisitorRegistration(
+                plate_number="沪A12345",
+                company="蓝色鲸鱼科技",
+                phone="13800001234",
+                reason="送货",
+            )
+        ],
+    )
+
+    assert message["role"] == "user"
+    assert "近5次来访记录" in message["content"]
+    assert "沪A12345" in message["content"]
+    assert "请根据以下来电信息直接开始说第一句欢迎语" in message["content"]
 
 
 def test_extract_assistant_text_delta_from_messages_tuple() -> None:

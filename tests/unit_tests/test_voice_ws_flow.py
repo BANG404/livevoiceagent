@@ -3,6 +3,7 @@ import json
 
 from fastapi.testclient import TestClient
 
+from agent.domain import VisitorRegistration
 import voice.app as voice_app_module
 from voice.app import app
 from voice.audio import FRAME_BYTES_PCM16, pcm16_to_mulaw_payload
@@ -31,6 +32,18 @@ class _FakeAgent:
         assert metadata["caller"] == "+8613800001234"
         return "thread-1"
 
+    async def stream_welcome_text(
+        self,
+        thread_id: str,
+        metadata: dict[str, str],
+        recent_visits: list[VisitorRegistration],
+    ):
+        assert thread_id == "thread-1"
+        assert metadata["caller"] == "+8613800001234"
+        assert len(recent_visits) == 1
+        assert recent_visits[0].plate_number == "沪A12345"
+        yield "张师傅您好，今天还是来蓝色鲸鱼送货吗？"
+
     async def stream_reply_text(
         self,
         thread_id: str,
@@ -48,7 +61,7 @@ class _FakeAgent:
 
 class _FakeTts:
     async def stream_pcm16(self, text: str):
-        assert "车牌号" in text
+        assert "车牌号" in text or "张师傅您好" in text
         yield b"\x01\x00" * (FRAME_BYTES_PCM16 // 2)
 
 
@@ -73,16 +86,34 @@ class _BargeInUtteranceBuffer:
 
 class _SlowTts:
     async def stream_pcm16(self, text: str):
-        assert "车牌号" in text
+        assert "车牌号" in text or "张师傅您好" in text
         for _ in range(4):
             yield b"\x01\x00" * (FRAME_BYTES_PCM16 // 2)
             await asyncio.sleep(0.05)
+
+
+class _FakeStore:
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+    def recent_by_phone(self, phone: str, limit: int = 5) -> list[VisitorRegistration]:
+        assert phone == "+8613800001234"
+        assert limit == 5
+        return [
+            VisitorRegistration(
+                plate_number="沪A12345",
+                company="蓝色鲸鱼科技",
+                phone="13800001234",
+                reason="送货",
+            )
+        ]
 
 
 def test_twilio_media_websocket_accepts_local_client(monkeypatch) -> None:
     monkeypatch.setattr(voice_app_module, "UtteranceBuffer", _ImmediateUtteranceBuffer)
     monkeypatch.setattr(voice_app_module, "LangGraphAudioAgent", _FakeAgent)
     monkeypatch.setattr(voice_app_module, "build_tts", lambda settings: _FakeTts())
+    monkeypatch.setattr(voice_app_module, "VisitorStore", _FakeStore)
 
     client = TestClient(app)
     payload = pcm16_to_mulaw_payload(b"\x02\x00" * (FRAME_BYTES_PCM16 // 2))
@@ -118,6 +149,10 @@ def test_twilio_media_websocket_accepts_local_client(monkeypatch) -> None:
         assert reply["streamSid"] == "MZ123"
         assert reply["media"]["payload"]
 
+        second_reply = websocket.receive_json()
+        assert second_reply["event"] == "media"
+        assert second_reply["streamSid"] == "MZ123"
+
         websocket.send_text(json.dumps({"event": "stop", "streamSid": "MZ123"}))
 
 
@@ -125,6 +160,7 @@ def test_twilio_media_websocket_sends_clear_on_barge_in(monkeypatch) -> None:
     monkeypatch.setattr(voice_app_module, "UtteranceBuffer", _BargeInUtteranceBuffer)
     monkeypatch.setattr(voice_app_module, "LangGraphAudioAgent", _FakeAgent)
     monkeypatch.setattr(voice_app_module, "build_tts", lambda settings: _SlowTts())
+    monkeypatch.setattr(voice_app_module, "VisitorStore", _FakeStore)
 
     client = TestClient(app)
     payload = pcm16_to_mulaw_payload(b"\x02\x00" * (FRAME_BYTES_PCM16 // 2))
@@ -167,5 +203,7 @@ def test_twilio_media_websocket_sends_clear_on_barge_in(monkeypatch) -> None:
             )
         )
 
-        clear_event = websocket.receive_json()
-        assert clear_event == {"event": "clear", "streamSid": "MZ123"}
+        next_event = websocket.receive_json()
+        if next_event != {"event": "clear", "streamSid": "MZ123"}:
+            next_event = websocket.receive_json()
+        assert next_event == {"event": "clear", "streamSid": "MZ123"}
