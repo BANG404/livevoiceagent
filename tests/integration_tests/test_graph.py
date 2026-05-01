@@ -13,9 +13,9 @@ def _skip_unavailable_model() -> None:
             allow_module_level=True,
         )
 
-    if not settings.openai_api_key or settings.openai_api_key.startswith("sk-your-"):
+    if not settings.google_api_key or settings.google_api_key == "your-google-api-key":
         pytest.skip(
-            "Set OPENAI_API_KEY to run OpenAI-compatible integration tests.",
+            "Set GOOGLE_API_KEY to run Gemini integration tests.",
             allow_module_level=True,
         )
 

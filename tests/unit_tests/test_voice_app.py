@@ -63,9 +63,9 @@ def test_build_audio_user_message_uses_multimodal_audio_block() -> None:
     assert message["content"][1]["type"] == "input_audio"
     audio_data = message["content"][1]["input_audio"]
     assert audio_data["format"] == "wav"
-    assert audio_data["data"].startswith("data:audio/wav;base64,")
+    assert "data:audio/wav;base64," not in audio_data["data"]
 
-    wav_bytes = base64.b64decode(audio_data["data"].split(",", maxsplit=1)[1])
+    wav_bytes = base64.b64decode(audio_data["data"])
     with wave.open(BytesIO(wav_bytes), "rb") as wav:
         assert wav.getframerate() == 8000
         assert wav.getnchannels() == 1
