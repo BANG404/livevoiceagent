@@ -11,12 +11,18 @@ Caller
   -> Silero VAD utterance buffer
   -> LangGraph SDK /runs/stream
   -> multimodal LangChain Agent
-  -> JSONL visitor store
+  -> SQLite visitor store
   -> WeCom group robot webhook
   -> Guard
   -> streamed text deltas
   -> Kokoro-82M TTS
   -> Twilio Media Streams audio
+
+Guard Query Bot
+  -> WeCom AI Bot WebSocket gateway
+  -> LangGraph guard_query assistant
+  -> visitor SQLite analytics tools
+  -> Guard
 ```
 
 The current implementation keeps speech adapters replaceable. Twilio bidirectional Media Streams, optional DashScope ASR, μ-law audio framing, Silero VAD buffering, LangGraph SDK streaming, visitor registration, Kokoro-82M TTS, and WeCom notification are implemented. By default caller audio is sent to the agent as an OpenAI-compatible `input_audio` content block; when `STT_PROVIDER=dashscope`, the phone path first transcribes the utterance and then sends text to the agent.
@@ -59,9 +65,13 @@ DASHSCOPE_ASR_MODEL=qwen3-asr-flash
 DASHSCOPE_ASR_LANGUAGE=
 LANGGRAPH_API_URL=http://127.0.0.1:2024
 LANGGRAPH_ASSISTANT_ID=agent
+WECOM_QUERY_ASSISTANT_ID=guard_query
 PUBLIC_BASE_URL=https://your-ngrok-url
 TWILIO_WELCOME_MESSAGE=您好，请问车牌号多少，今天找哪家公司，什么事儿？
 GUARD_WECHAT_WEBHOOK=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
+WECOM_BOT_ID=
+WECOM_BOT_SECRET=
+WECOM_WS_URL=wss://openws.work.weixin.qq.com
 TTS_PROVIDER=kokoro
 KOKORO_LANG_CODE=z
 KOKORO_REPO_ID=hexgrad/Kokoro-82M
@@ -94,7 +104,10 @@ If you want to run them separately:
 ```bash
 make run
 make voice
+make wecom-bot
 ```
+
+`guard_query` is a second LangGraph assistant dedicated to the 门卫查询场景. It exposes structured tools over the same SQLite visitor store, so guards can ask for counts, recent matching registrations, busiest entry hours, and repeat-visitor summaries through the Enterprise WeChat long-connection bot. The WeCom channel runtime now lives in the separate `src/wecom_bot/` package and uses `wecom-aibot-sdk-python` instead of a hand-rolled WebSocket client.
 
 To verify the real `Silero VAD` and `Kokoro` integrations, run:
 
