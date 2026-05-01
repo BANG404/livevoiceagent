@@ -8,7 +8,6 @@ from langgraph_sdk.schema import StreamPart
 
 from agent.domain import VisitorRegistration
 from voice.agent_stream import (
-    VOICE_TEXT_INSTRUCTION,
     build_audio_user_message,
     build_recent_visits_user_message,
     build_text_user_message,
@@ -109,18 +108,10 @@ def test_build_recent_visits_user_message_embeds_last_five_visits() -> None:
 
 
 def test_build_text_user_message_embeds_transcript_and_call_context() -> None:
-    message = build_text_user_message(
-        "我的车牌沪A12345，找蓝色鲸鱼科技送货。",
-        {"call_sid": "CA123", "caller": "+8613800001234"},
-    )
+    message = build_text_user_message("我的车牌沪A12345，找蓝色鲸鱼科技送货。")
 
     assert message["role"] == "user"
-    assert VOICE_TEXT_INSTRUCTION in message["content"]
-    assert "来电号码：+8613800001234。" in message["content"]
-    assert "Twilio CallSid：CA123。" in message["content"]
-    assert (
-        "访客本轮语音转写：我的车牌沪A12345，找蓝色鲸鱼科技送货。" in message["content"]
-    )
+    assert message["content"] == "我的车牌沪A12345，找蓝色鲸鱼科技送货。"
 
 
 def test_extract_assistant_text_delta_from_messages_tuple() -> None:
