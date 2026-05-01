@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import contextlib
 from collections.abc import Iterable
 from collections.abc import AsyncIterator, Mapping
-from typing import Any
 import logging
+from typing import Any
 
 from langgraph_sdk import get_client
 from langgraph_sdk.client import LangGraphClient
@@ -36,8 +37,6 @@ def build_audio_user_message(
     context_parts = [VOICE_AUDIO_INSTRUCTION]
     if caller := metadata.get("caller"):
         context_parts.append(f"来电号码：{caller}。")
-    if call_sid := metadata.get("call_sid"):
-        context_parts.append(f"Twilio CallSid：{call_sid}。")
 
     audio_b64 = base64.b64encode(
         pcm16_wav_bytes(pcm16, sample_rate=sample_rate)
@@ -70,8 +69,6 @@ def build_recent_visits_user_message(
     ]
     if caller := metadata.get("caller"):
         lines.append(f"来电号码：{caller}")
-    if call_sid := metadata.get("call_sid"):
-        lines.append(f"Twilio CallSid：{call_sid}")
     if visits:
         lines.append("该号码近5次来访记录（按时间倒序）：")
         for index, visit in enumerate(visits, start=1):
@@ -161,8 +158,9 @@ class LangGraphAudioAgent:
         await self.client.runs.cancel(thread_id, run_id, action="interrupt")
 
     async def cancel_active_run(self, thread_id: str) -> None:
-        if run_id := self._active_run_ids.get(thread_id):
-            await self.cancel_run(thread_id, run_id)
+        if run_id := self._active_run_ids.pop(thread_id, None):
+            with contextlib.suppress(Exception):
+                await self.cancel_run(thread_id, run_id)
 
     async def _stream_run(
         self,
@@ -182,11 +180,7 @@ class LangGraphAudioAgent:
             async for part in self.client.runs.stream(
                 thread_id=thread_id,
                 assistant_id=self.settings.langgraph_assistant_id,
-                input={
-                    "messages": [message],
-                    "call_sid": metadata.get("call_sid"),
-                    "caller": metadata.get("caller"),
-                },
+                input={"messages": [message]},
                 metadata={
                     "call_sid": metadata.get("call_sid", ""),
                     "caller": metadata.get("caller", ""),
@@ -197,7 +191,9 @@ class LangGraphAudioAgent:
                 on_run_created=handle_run_created,
             ):
                 yield part
-        except BaseException:
+        except asyncio.CancelledError:
+            raise
+        except Exception:
             if run_id:
                 with contextlib.suppress(Exception):
                     await self.cancel_run(thread_id, run_id)
