@@ -227,6 +227,8 @@ class PulseAudioBridge:
         sample_rate: int = TWILIO_SAMPLE_RATE,
         frame_bytes: int = FRAME_BYTES_PCM16,
         max_queue_frames: int = 256,
+        startup_retries: int = 3,
+        startup_retry_delay: float = 0.25,
     ) -> None:
         if shutil.which("parec") is None or shutil.which("paplay") is None:
             raise RuntimeError(
@@ -245,9 +247,13 @@ class PulseAudioBridge:
         self.capture_task: asyncio.Task[None] | None = None
         self.playback_task: asyncio.Task[None] | None = None
         self.playback_active = False
+        self.startup_retries = max(1, startup_retries)
+        self.startup_retry_delay = max(0.0, startup_retry_delay)
 
     def start(self) -> None:
         env = os.environ.copy()
+        if not env.get("PULSE_SERVER") and os.path.exists("/mnt/wslg/PulseServer"):
+            env["PULSE_SERVER"] = "unix:/mnt/wslg/PulseServer"
         parec_cmd = [
             "parec",
             "--format=s16le",
@@ -268,22 +274,43 @@ class PulseAudioBridge:
         if self.output_device:
             paplay_cmd.extend(["--device", self.output_device])
 
-        self.capture_process = subprocess.Popen(
-            parec_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
-        self.playback_process = subprocess.Popen(
-            paplay_cmd,
-            stdin=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
-        self._ensure_process_started(self.capture_process, "parec")
-        self._ensure_process_started(self.playback_process, "paplay")
-        self.capture_task = asyncio.create_task(self._capture_loop())
-        self.playback_task = asyncio.create_task(self._playback_loop())
+        last_error: RuntimeError | None = None
+        for attempt in range(self.startup_retries):
+            self.capture_process = subprocess.Popen(
+                parec_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            self.playback_process = subprocess.Popen(
+                paplay_cmd,
+                stdin=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            try:
+                self._ensure_process_started(self.capture_process, "parec")
+                self._ensure_process_started(self.playback_process, "paplay")
+            except RuntimeError as exc:
+                last_error = exc
+                self._terminate_process(self.capture_process)
+                self._terminate_process(self.playback_process)
+                self.capture_process = None
+                self.playback_process = None
+                if attempt + 1 < self.startup_retries:
+                    time.sleep(self.startup_retry_delay)
+                    continue
+                break
+
+            self.capture_task = asyncio.create_task(self._capture_loop())
+            self.playback_task = asyncio.create_task(self._playback_loop())
+            return
+
+        if last_error is not None:
+            raise RuntimeError(
+                f"{last_error}. PulseAudio init failed after {self.startup_retries} attempts."
+            ) from last_error
+        raise RuntimeError("PulseAudio init failed before starting capture/playback.")
 
     async def aclose(self) -> None:
         if self.capture_task:
@@ -407,19 +434,7 @@ def choose_audio_bridge(
     input_device: int | str | None = None,
     output_device: int | str | None = None,
 ) -> tuple[Any, str]:
-    try:
-        bridge = LocalAudioBridge(
-            input_device=input_device if isinstance(input_device, int) else None,
-            output_device=output_device if isinstance(output_device, int) else None,
-        )
-        return bridge, "sounddevice"
-    except Exception as exc:
-        sounddevice_error = exc
-        if not is_wsl_pulse_available():
-            raise RuntimeError(
-                f"Failed to initialize local audio via sounddevice: {exc}"
-            ) from exc
-
+    if is_wsl_pulse_available():
         try:
             bridge = PulseAudioBridge(
                 input_device=input_device if isinstance(input_device, str) else None,
@@ -427,11 +442,29 @@ def choose_audio_bridge(
             )
             return bridge, "pulseaudio"
         except Exception as pulse_exc:
-            raise RuntimeError(
-                "Failed to initialize local audio. "
-                f"sounddevice failed first: {sounddevice_error}. "
-                f"PulseAudio fallback failed next: {pulse_exc}"
-            ) from pulse_exc
+            try:
+                bridge = LocalAudioBridge(
+                    input_device=input_device if isinstance(input_device, int) else None,
+                    output_device=output_device if isinstance(output_device, int) else None,
+                )
+                return bridge, "sounddevice"
+            except Exception as sounddevice_exc:
+                raise RuntimeError(
+                    "Failed to initialize local audio. "
+                    f"PulseAudio failed first: {pulse_exc}. "
+                    f"sounddevice fallback failed next: {sounddevice_exc}"
+                ) from sounddevice_exc
+
+    try:
+        bridge = LocalAudioBridge(
+            input_device=input_device if isinstance(input_device, int) else None,
+            output_device=output_device if isinstance(output_device, int) else None,
+        )
+        return bridge, "sounddevice"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to initialize local audio via sounddevice: {exc}"
+        ) from exc
 
 
 async def send_microphone_audio(
