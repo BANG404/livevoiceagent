@@ -48,8 +48,10 @@ sudo apt-get install portaudio19-dev
 Required environment variables:
 
 ```bash
-AGENT_MODEL=gemini-2.5-flash
+AGENT_MODEL=google_genai:gemini-2.5-flash
 GOOGLE_API_KEY=your-google-api-key
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
 LANGGRAPH_API_URL=http://127.0.0.1:2024
 LANGGRAPH_ASSISTANT_ID=agent
 PUBLIC_BASE_URL=https://your-ngrok-url
@@ -62,7 +64,15 @@ AGENT_VOICE=zf_xiaobei
 VAD_PROVIDER=silero
 ```
 
-This repo uses LangChain's `ChatGoogleGenerativeAI` adapter for Gemini. The model name in `AGENT_MODEL` must match the Gemini model identifier available to your Google AI Studio API key.
+`AGENT_MODEL` now accepts provider-prefixed model IDs such as
+`google_genai:gemini-2.5-flash` or `openai:gpt-4o-mini`. Plain Gemini model
+names remain supported for backward compatibility and are treated as Google
+GenAI models.
+
+When `AGENT_MODEL` uses the `openai:` prefix, the runtime uses LangChain's
+`ChatOpenAI` adapter and honors `OPENAI_API_KEY` plus an optional
+`OPENAI_BASE_URL` for OpenAI-compatible gateways. When `AGENT_MODEL` uses the
+Google path, `GOOGLE_API_KEY` is used as before.
 
 The Twilio voice path currently sends caller audio to the agent as a Base64 Data URL in an `input_audio` block. Use an audio-capable Gemini model such as `gemini-2.5-flash`; text-only local models need a separate STT step before the live phone flow.
 
