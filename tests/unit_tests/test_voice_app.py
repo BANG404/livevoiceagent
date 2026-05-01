@@ -135,7 +135,9 @@ def test_text_delta_segmenter_splits_on_phone_friendly_punctuation() -> None:
 
 
 @pytest.mark.anyio
-async def test_recent_visits_for_caller_reads_store_async(tmp_path, monkeypatch) -> None:
+async def test_recent_visits_for_caller_reads_store_async(
+    tmp_path, monkeypatch
+) -> None:
     store_path = tmp_path / "visitors.sqlite3"
     monkeypatch.setattr(
         voice_app_module,

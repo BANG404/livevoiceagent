@@ -86,7 +86,7 @@ async def test_dashscope_stt_wraps_pcm_as_data_url_and_extracts_text(
 
 
 def test_build_stt_returns_none_by_default() -> None:
-    assert build_stt(Settings()) is None
+    assert build_stt(Settings(stt_provider="")) is None
 
 
 def test_build_stt_rejects_unknown_provider() -> None:
@@ -96,7 +96,7 @@ def test_build_stt_rejects_unknown_provider() -> None:
 
 def test_build_stt_requires_dashscope_api_key() -> None:
     with pytest.raises(ValueError, match="DASHSCOPE_API_KEY"):
-        build_stt(Settings(stt_provider="dashscope"))
+        build_stt(Settings(stt_provider="dashscope", dashscope_api_key=""))
 
 
 @pytest.mark.anyio

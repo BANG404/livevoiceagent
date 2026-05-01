@@ -10,11 +10,19 @@ from agent.graph import (
     graph,
     register_visitor,
 )
+from agent.query_graph import (
+    count_visitor_registrations,
+    find_busiest_visit_hour,
+    graph as guard_query_graph,
+    list_repeat_visitors,
+    search_visitor_registrations,
+)
 from voice.audio import UtteranceBuffer, mulaw_payload_to_pcm16, pcm16_to_mulaw_payload
 
 
 def test_graph_compiles() -> None:
     assert isinstance(graph, Pregel)
+    assert isinstance(guard_query_graph, Pregel)
 
 
 def test_system_prompt_includes_current_utc_time() -> None:
@@ -80,6 +88,41 @@ def test_visitor_store_recent_by_phone_returns_latest_five(tmp_path) -> None:
     assert recent[-1].reason == "送货1"
 
 
+def test_visitor_store_query_and_analytics(tmp_path) -> None:
+    store = VisitorStore(str(tmp_path / "visitors.sqlite3"))
+    store.append(
+        VisitorRegistration(
+            plate_number="沪A12345",
+            company="蓝色鲸鱼科技",
+            phone="13800001234",
+            reason="张师傅送货",
+        )
+    )
+    store.append(
+        VisitorRegistration(
+            plate_number="沪A12345",
+            company="蓝色鲸鱼科技",
+            phone="13800001234",
+            reason="张师傅送货",
+        )
+    )
+    store.append(
+        VisitorRegistration(
+            plate_number="苏B67890",
+            company="绿色海豚贸易",
+            phone="13900005678",
+            reason="面试",
+        )
+    )
+
+    assert store.count_visits(keyword="张师傅") == 2
+    assert len(store.query_visits(company="蓝色鲸鱼", limit=5)) == 2
+    assert store.busiest_hour() is not None
+    repeat_visitors = store.top_repeat_visitors(limit=2)
+    assert repeat_visitors[0]["plate_number"] == "沪A12345"
+    assert repeat_visitors[0]["total_visits"] == 2
+
+
 @pytest.mark.anyio
 async def test_register_visitor_persists_plate_number(tmp_path, monkeypatch) -> None:
     store_path = tmp_path / "visitors.sqlite3"
@@ -105,7 +148,9 @@ async def test_register_visitor_persists_plate_number(tmp_path, monkeypatch) -> 
 
 
 @pytest.mark.anyio
-async def test_visitor_store_async_recent_by_phone_returns_latest_five(tmp_path) -> None:
+async def test_visitor_store_async_recent_by_phone_returns_latest_five(
+    tmp_path,
+) -> None:
     store_path = tmp_path / "visitors.sqlite3"
     store = VisitorStore(str(store_path))
     for index in range(6):
@@ -127,6 +172,44 @@ async def test_visitor_store_async_recent_by_phone_returns_latest_five(tmp_path)
     assert len(recent) == 5
     assert recent[0].reason == "回访5"
     assert recent[-1].reason == "回访1"
+
+
+@pytest.mark.anyio
+async def test_guard_query_tools_use_visitor_store(tmp_path, monkeypatch) -> None:
+    store_path = tmp_path / "visitors.sqlite3"
+    store = VisitorStore(str(store_path))
+    store.append(
+        VisitorRegistration(
+            plate_number="沪A12345",
+            company="蓝色鲸鱼科技",
+            phone="13800001234",
+            reason="张师傅送货",
+        )
+    )
+    store.append(
+        VisitorRegistration(
+            plate_number="沪A22345",
+            company="蓝色鲸鱼科技",
+            phone="13800001234",
+            reason="张师傅送货",
+        )
+    )
+    monkeypatch.setattr(
+        "agent.query_graph.settings",
+        SimpleNamespace(visitor_store_path=str(store_path)),
+    )
+
+    count_payload = await count_visitor_registrations.ainvoke({"keyword": "张师傅"})
+    search_payload = await search_visitor_registrations.ainvoke(
+        {"company": "蓝色鲸鱼", "limit": 5}
+    )
+    busiest_payload = await find_busiest_visit_hour.ainvoke({})
+    repeat_payload = await list_repeat_visitors.ainvoke({"limit": 3})
+
+    assert '"total": 2' in count_payload
+    assert "沪A12345" in search_payload or "沪A22345" in search_payload
+    assert "hour_bucket" in busiest_payload
+    assert '"total_visits": 2' in repeat_payload
 
 
 def test_register_visitor_storage_is_queryable_by_caller_id(
@@ -191,5 +274,26 @@ def test_settings_support_dashscope_asr_configuration(monkeypatch) -> None:
         )
         assert reloaded.dashscope_asr_model == "qwen3-asr-flash-us"
         assert reloaded.dashscope_asr_language == "zh"
+    finally:
+        reload(config_module)
+
+
+def test_settings_support_wecom_query_bot_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("WECOM_QUERY_ASSISTANT_ID", "guard_query")
+    monkeypatch.setenv("WECOM_BOT_ID", "bot-123")
+    monkeypatch.setenv("WECOM_BOT_SECRET", "secret-xyz")
+    monkeypatch.setenv("WECOM_HEARTBEAT_SECONDS", "45")
+
+    from importlib import reload
+    import agent.config as config_module
+
+    reload(config_module)
+
+    try:
+        reloaded = config_module.Settings()
+        assert reloaded.wecom_query_assistant_id == "guard_query"
+        assert reloaded.wecom_bot_id == "bot-123"
+        assert reloaded.wecom_bot_secret == "secret-xyz"
+        assert reloaded.wecom_heartbeat_seconds == 45
     finally:
         reload(config_module)
