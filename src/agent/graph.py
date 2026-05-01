@@ -71,7 +71,7 @@ async def register_visitor(
         caller=caller,
         call_sid=call_sid,
     )
-    VisitorStore(settings.visitor_store_path).append(registration)
+    await VisitorStore.append_async(settings.visitor_store_path, registration)
     sent = await WeComWebhookNotifier(settings.guard_wechat_webhook).send(registration)
     if sent:
         return "已登记并通知门卫"
