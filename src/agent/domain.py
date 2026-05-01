@@ -6,6 +6,7 @@ import asyncio
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -202,6 +203,192 @@ class VisitorStore:
                 (normalized_phone, limit),
             ).fetchall()
         return [self._row_to_registration(row) for row in rows]
+
+    def query_visits(
+        self,
+        *,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        company: str | None = None,
+        phone: str | None = None,
+        plate_number: str | None = None,
+        reason_keyword: str | None = None,
+        caller: str | None = None,
+        keyword: str | None = None,
+        limit: int = 20,
+    ) -> list[VisitorRegistration]:
+        sql, values = self._build_visit_query(
+            start_time=start_time,
+            end_time=end_time,
+            company=company,
+            phone=phone,
+            plate_number=plate_number,
+            reason_keyword=reason_keyword,
+            caller=caller,
+            keyword=keyword,
+            select_columns=(
+                "plate_number, company, phone, reason, entry_time, caller, call_sid"
+            ),
+            order_by="ORDER BY datetime(entry_time) DESC, id DESC",
+            limit=limit,
+        )
+        with self._connect() as connection:
+            rows = connection.execute(sql, values).fetchall()
+        return [self._row_to_registration(row) for row in rows]
+
+    def count_visits(
+        self,
+        *,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        company: str | None = None,
+        phone: str | None = None,
+        plate_number: str | None = None,
+        reason_keyword: str | None = None,
+        caller: str | None = None,
+        keyword: str | None = None,
+    ) -> int:
+        sql, values = self._build_visit_query(
+            start_time=start_time,
+            end_time=end_time,
+            company=company,
+            phone=phone,
+            plate_number=plate_number,
+            reason_keyword=reason_keyword,
+            caller=caller,
+            keyword=keyword,
+            select_columns="COUNT(*) AS total",
+        )
+        with self._connect() as connection:
+            row = connection.execute(sql, values).fetchone()
+        return int(row["total"]) if row is not None else 0
+
+    def busiest_hour(
+        self,
+        *,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        sql, values = self._build_visit_query(
+            start_time=start_time,
+            end_time=end_time,
+            select_columns=(
+                "strftime('%Y-%m-%d %H:00', entry_time) AS hour_bucket, "
+                "COUNT(*) AS total"
+            ),
+            group_by="GROUP BY hour_bucket",
+            order_by="ORDER BY total DESC, hour_bucket ASC",
+            limit=1,
+        )
+        with self._connect() as connection:
+            row = connection.execute(sql, values).fetchone()
+        if row is None or not row["hour_bucket"]:
+            return None
+        return {
+            "hour_bucket": str(row["hour_bucket"]),
+            "total": int(row["total"]),
+        }
+
+    def top_repeat_visitors(
+        self,
+        *,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        sql, values = self._build_visit_query(
+            start_time=start_time,
+            end_time=end_time,
+            select_columns=(
+                "phone_lookup, MAX(phone) AS phone, MAX(plate_number) AS plate_number, "
+                "MAX(company) AS company, COUNT(*) AS total_visits, "
+                "MAX(entry_time) AS latest_entry_time"
+            ),
+            group_by="GROUP BY phone_lookup",
+            order_by="ORDER BY total_visits DESC, datetime(latest_entry_time) DESC",
+            limit=limit,
+        )
+        with self._connect() as connection:
+            rows = connection.execute(sql, values).fetchall()
+        return [
+            {
+                "phone": str(row["phone"]),
+                "plate_number": str(row["plate_number"]),
+                "company": str(row["company"]),
+                "total_visits": int(row["total_visits"]),
+                "latest_entry_time": str(row["latest_entry_time"]),
+            }
+            for row in rows
+        ]
+
+    def _build_visit_query(
+        self,
+        *,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        company: str | None = None,
+        phone: str | None = None,
+        plate_number: str | None = None,
+        reason_keyword: str | None = None,
+        caller: str | None = None,
+        keyword: str | None = None,
+        select_columns: str,
+        group_by: str = "",
+        order_by: str = "",
+        limit: int | None = None,
+    ) -> tuple[str, list[Any]]:
+        where_clauses: list[str] = []
+        values: list[Any] = []
+
+        if start_time is not None:
+            where_clauses.append("datetime(entry_time) >= datetime(?)")
+            values.append(start_time.isoformat())
+        if end_time is not None:
+            where_clauses.append("datetime(entry_time) <= datetime(?)")
+            values.append(end_time.isoformat())
+        if company:
+            where_clauses.append("company LIKE ?")
+            values.append(f"%{company.strip()}%")
+        if phone:
+            normalized_phone = _normalize_phone_lookup(phone)
+            if normalized_phone:
+                where_clauses.append("phone_lookup = ?")
+                values.append(normalized_phone)
+        if plate_number:
+            where_clauses.append("UPPER(plate_number) = ?")
+            values.append(plate_number.strip().upper())
+        if reason_keyword:
+            where_clauses.append("reason LIKE ?")
+            values.append(f"%{reason_keyword.strip()}%")
+        if caller:
+            normalized_caller = _normalize_phone_lookup(caller)
+            if normalized_caller:
+                where_clauses.append(
+                    "substr(replace(replace(replace(replace(ifnull(caller, ''), '+', ''), '-', ''), ' ', ''), '86', ''), -11) = ?"
+                )
+                values.append(normalized_caller)
+        if keyword:
+            cleaned_keyword = keyword.strip()
+            if cleaned_keyword:
+                where_clauses.append(
+                    "("
+                    "plate_number LIKE ? OR company LIKE ? OR phone LIKE ? OR "
+                    "reason LIKE ? OR ifnull(caller, '') LIKE ?"
+                    ")"
+                )
+                values.extend([f"%{cleaned_keyword}%"] * 5)
+
+        sql = f"SELECT {select_columns} FROM visitor_registrations"
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+        if group_by:
+            sql += f" {group_by}"
+        if order_by:
+            sql += f" {order_by}"
+        if limit is not None and limit > 0:
+            sql += " LIMIT ?"
+            values.append(limit)
+        return sql, values
 
     @classmethod
     async def recent_by_phone_async(
