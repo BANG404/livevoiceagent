@@ -6,10 +6,13 @@ import pytest
 
 from agent.config import Settings
 from voice.speech import (
+    DashScopeSpeechToText,
     KokoroTextToSpeech,
     SilenceTextToSpeech,
     TextToSpeech,
+    _extract_dashscope_asr_text,
     _waveform_to_twilio_pcm16,
+    build_stt,
     build_tts,
     pcm16_wav_bytes,
 )
@@ -27,6 +30,73 @@ async def test_text_to_speech_stream_pcm16_yields_synthesize_result() -> None:
     chunks = [chunk async for chunk in tts.stream_pcm16("hello")]
 
     assert chunks == [b"abc"]
+
+
+@pytest.mark.anyio
+async def test_dashscope_stt_wraps_pcm_as_data_url_and_extracts_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeConversation:
+        @staticmethod
+        def call(**kwargs):
+            captured.update(kwargs)
+            return {
+                "output": {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": [{"text": "沪A12345，蓝色鲸鱼科技，送货"}]
+                            }
+                        }
+                    ]
+                }
+            }
+
+    fake_dashscope = types.SimpleNamespace(
+        MultiModalConversation=FakeConversation,
+        base_http_api_url="",
+    )
+    monkeypatch.setitem(sys.modules, "dashscope", fake_dashscope)
+
+    stt = DashScopeSpeechToText(
+        Settings(
+            stt_provider="dashscope",
+            dashscope_api_key="sk-test",
+            dashscope_asr_model="qwen3-asr-flash",
+            dashscope_asr_language="zh",
+        )
+    )
+
+    transcript = await stt.transcribe_pcm16(b"\x00\x00" * 160)
+
+    assert transcript == "沪A12345，蓝色鲸鱼科技，送货"
+    assert captured["api_key"] == "sk-test"
+    assert captured["model"] == "qwen3-asr-flash"
+    assert captured["result_format"] == "message"
+    assert captured["asr_options"] == {
+        "enable_lid": True,
+        "enable_itn": False,
+        "language": "zh",
+    }
+    messages = captured["messages"]
+    assert isinstance(messages, list)
+    assert messages[1]["content"][0]["audio"].startswith("data:audio/wav;base64,")
+
+
+def test_build_stt_returns_none_by_default() -> None:
+    assert build_stt(Settings()) is None
+
+
+def test_build_stt_rejects_unknown_provider() -> None:
+    with pytest.raises(ValueError, match="Unsupported STT_PROVIDER"):
+        build_stt(Settings(stt_provider="unknown"))
+
+
+def test_build_stt_requires_dashscope_api_key() -> None:
+    with pytest.raises(ValueError, match="DASHSCOPE_API_KEY"):
+        build_stt(Settings(stt_provider="dashscope"))
 
 
 @pytest.mark.anyio
@@ -143,3 +213,19 @@ def test_pcm16_wav_bytes_wraps_audio_in_mono_8k_wav() -> None:
 
     assert wav_bytes[:4] == b"RIFF"
     assert b"WAVE" in wav_bytes[:16]
+
+
+def test_extract_dashscope_asr_text_handles_object_style_response() -> None:
+    content = [
+        types.SimpleNamespace(text="第一句"),
+        types.SimpleNamespace(text="第二句"),
+    ]
+    response = types.SimpleNamespace(
+        output=types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(message=types.SimpleNamespace(content=content))
+            ]
+        )
+    )
+
+    assert _extract_dashscope_asr_text(response) == "第一句第二句"

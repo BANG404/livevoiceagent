@@ -104,7 +104,34 @@ async def test_register_visitor_persists_plate_number(tmp_path, monkeypatch) -> 
     assert latest.phone == "13800001234"
 
 
-def test_register_visitor_storage_is_queryable_by_caller_id(tmp_path, monkeypatch) -> None:
+@pytest.mark.anyio
+async def test_visitor_store_async_recent_by_phone_returns_latest_five(tmp_path) -> None:
+    store_path = tmp_path / "visitors.sqlite3"
+    store = VisitorStore(str(store_path))
+    for index in range(6):
+        store.append(
+            VisitorRegistration(
+                plate_number=f"沪A2234{index}",
+                company="蓝色鲸鱼科技",
+                phone="13800001234",
+                reason=f"回访{index}",
+            )
+        )
+
+    recent = await VisitorStore.recent_by_phone_async(
+        str(store_path),
+        "+86 13800001234",
+        limit=5,
+    )
+
+    assert len(recent) == 5
+    assert recent[0].reason == "回访5"
+    assert recent[-1].reason == "回访1"
+
+
+def test_register_visitor_storage_is_queryable_by_caller_id(
+    tmp_path, monkeypatch
+) -> None:
     store_path = tmp_path / "visitors.sqlite3"
     monkeypatch.setattr(
         graph_module,
@@ -139,3 +166,30 @@ def test_utterance_buffer_closes_after_silence() -> None:
     assert buffer.push(b"\x00\x00" * 160) is None
     utterance = buffer.push(b"\x00\x00" * 160)
     assert utterance is not None
+
+
+def test_settings_support_dashscope_asr_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("STT_PROVIDER", "dashscope")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
+    monkeypatch.setenv(
+        "DASHSCOPE_BASE_URL", "https://dashscope-intl.aliyuncs.com/api/v1"
+    )
+    monkeypatch.setenv("DASHSCOPE_ASR_MODEL", "qwen3-asr-flash-us")
+    monkeypatch.setenv("DASHSCOPE_ASR_LANGUAGE", "zh")
+
+    from importlib import reload
+    import agent.config as config_module
+
+    reload(config_module)
+
+    try:
+        reloaded = config_module.Settings()
+        assert reloaded.stt_provider == "dashscope"
+        assert reloaded.dashscope_api_key == "sk-test"
+        assert (
+            reloaded.dashscope_base_url == "https://dashscope-intl.aliyuncs.com/api/v1"
+        )
+        assert reloaded.dashscope_asr_model == "qwen3-asr-flash-us"
+        assert reloaded.dashscope_asr_language == "zh"
+    finally:
+        reload(config_module)
