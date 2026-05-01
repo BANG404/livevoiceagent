@@ -19,7 +19,7 @@ Caller
   -> Twilio Media Streams audio
 ```
 
-The current implementation keeps speech adapters replaceable. Twilio bidirectional Media Streams, μ-law audio framing, Silero VAD buffering, LangGraph SDK streaming, visitor registration, Kokoro-82M TTS, and WeCom notification are implemented. Caller audio is sent to the agent as an OpenAI-compatible `input_audio` content block; there is no separate STT step.
+The current implementation keeps speech adapters replaceable. Twilio bidirectional Media Streams, optional DashScope ASR, μ-law audio framing, Silero VAD buffering, LangGraph SDK streaming, visitor registration, Kokoro-82M TTS, and WeCom notification are implemented. By default caller audio is sent to the agent as an OpenAI-compatible `input_audio` content block; when `STT_PROVIDER=dashscope`, the phone path first transcribes the utterance and then sends text to the agent.
 
 Code is split by responsibility: `agent` contains the LangGraph workflow, visitor domain model, registration tools, and guard notification; `voice` contains the FastAPI/Twilio transport layer, audio framing, utterance buffering, LangGraph SDK client, VAD, and TTS adapters.
 
@@ -52,6 +52,11 @@ AGENT_MODEL=google_genai:gemini-2.5-flash
 GOOGLE_API_KEY=your-google-api-key
 OPENAI_API_KEY=
 OPENAI_BASE_URL=
+STT_PROVIDER=
+DASHSCOPE_API_KEY=
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/api/v1
+DASHSCOPE_ASR_MODEL=qwen3-asr-flash
+DASHSCOPE_ASR_LANGUAGE=
 LANGGRAPH_API_URL=http://127.0.0.1:2024
 LANGGRAPH_ASSISTANT_ID=agent
 PUBLIC_BASE_URL=https://your-ngrok-url
@@ -74,9 +79,9 @@ When `AGENT_MODEL` uses the `openai:` prefix, the runtime uses LangChain's
 `OPENAI_BASE_URL` for OpenAI-compatible gateways. When `AGENT_MODEL` uses the
 Google path, `GOOGLE_API_KEY` is used as before.
 
-The Twilio voice path currently sends caller audio to the agent as a Base64 Data URL in an `input_audio` block. Use an audio-capable Gemini model such as `gemini-2.5-flash`; text-only local models need a separate STT step before the live phone flow.
+Leave `STT_PROVIDER` empty when `AGENT_MODEL` can directly understand audio, such as `google_genai:gemini-2.5-flash`. Set `STT_PROVIDER=dashscope` when the phone path should call Alibaba DashScope `qwen3-asr-flash` first and forward the transcript to a text-only model. `DASHSCOPE_BASE_URL` defaults to the China mainland endpoint; use the appropriate DashScope regional base URL if your API key is for Singapore or US regions.
 
-Inbound calls first play the configured `TWILIO_WELCOME_MESSAGE` through TwiML `<Say>`, then switch into bidirectional Media Streams at `/twilio/media`.
+Inbound calls immediately switch into bidirectional Media Streams at `/twilio/media`, and the agent generates the opening greeting from caller metadata plus recent-visit context.
 
 Start the LangGraph server and voice server together for local testing:
 
