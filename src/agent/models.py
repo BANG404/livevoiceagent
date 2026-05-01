@@ -18,6 +18,15 @@ def _split_model_provider(model_name: str) -> tuple[str | None, str]:
     return provider.strip().lower(), resolved_model_name.strip()
 
 
+def _openai_model_kwargs(model_name: str) -> dict[str, Any]:
+    lowered = model_name.lower()
+    if "audio" in lowered:
+        # Audio-first OpenAI-compatible models can require an explicit output
+        # modality even when we only want text back from the agent graph.
+        return {"modalities": ["text"]}
+    return {}
+
+
 def build_agent_model(settings: Settings) -> BaseChatModel:
     """Build the configured LangChain chat model from a provider-prefixed model id."""
     provider, model_name = _split_model_provider(settings.agent_model)
@@ -29,7 +38,10 @@ def build_agent_model(settings: Settings) -> BaseChatModel:
         return ChatGoogleGenerativeAI(**kwargs)
 
     if provider == "openai":
-        kwargs = {"model": model_name}
+        kwargs = {
+            "model": model_name,
+            "model_kwargs": _openai_model_kwargs(model_name),
+        }
         if settings.openai_api_key:
             kwargs["api_key"] = settings.openai_api_key
         if settings.openai_base_url:
