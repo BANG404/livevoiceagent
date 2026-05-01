@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -38,14 +38,96 @@ class VisitorRegistration(BaseModel):
         )
 
 
+def _normalize_phone_lookup(phone: str | None) -> str:
+    digits = "".join(char for char in (phone or "") if char.isdigit())
+    if digits.startswith("86") and len(digits) > 11:
+        digits = digits[2:]
+    if len(digits) >= 11:
+        return digits[-11:]
+    return digits
+
+
 class VisitorStore:
     def __init__(self, path: str) -> None:
         self.path = Path(path)
+        self._ensure_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS visitor_registrations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plate_number TEXT NOT NULL,
+                    company TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    phone_lookup TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    entry_time TEXT NOT NULL,
+                    caller TEXT,
+                    call_sid TEXT
+                )
+                """
+            )
+            columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(visitor_registrations)"
+                ).fetchall()
+            }
+            if "phone_lookup" not in columns:
+                connection.execute(
+                    "ALTER TABLE visitor_registrations ADD COLUMN phone_lookup TEXT"
+                )
+                connection.execute(
+                    """
+                    UPDATE visitor_registrations
+                    SET phone_lookup = substr(
+                        replace(replace(replace(replace(phone, '+', ''), '-', ''), ' ', ''), '86', ''),
+                        -11
+                    )
+                    WHERE phone_lookup IS NULL OR phone_lookup = ''
+                    """
+                )
+            connection.commit()
+
+    @staticmethod
+    def _row_to_registration(row: sqlite3.Row) -> VisitorRegistration:
+        return VisitorRegistration.model_validate(dict(row))
 
     def append(self, registration: VisitorRegistration) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(registration.model_dump_json() + "\n")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO visitor_registrations (
+                    plate_number,
+                    company,
+                    phone,
+                    phone_lookup,
+                    reason,
+                    entry_time,
+                    caller,
+                    call_sid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    registration.plate_number,
+                    registration.company,
+                    registration.phone,
+                    _normalize_phone_lookup(registration.phone),
+                    registration.reason,
+                    registration.entry_time.isoformat(),
+                    registration.caller,
+                    registration.call_sid,
+                ),
+            )
+            connection.commit()
 
     def latest_by_phone(self, phone: str) -> VisitorRegistration | None:
         return self.latest_by_phone_or_plate(phone=phone)
@@ -58,25 +140,56 @@ class VisitorStore:
         phone: str | None = None,
         plate_number: str | None = None,
     ) -> VisitorRegistration | None:
-        phone = phone.strip() if phone else None
+        phone = _normalize_phone_lookup(phone) if phone else None
         plate_number = plate_number.strip().upper() if plate_number else None
         if not phone and not plate_number:
             return None
 
-        if not self.path.exists():
+        where_clauses: list[str] = []
+        values: list[str] = []
+        if phone:
+            where_clauses.append("phone_lookup = ?")
+            values.append(phone)
+        if plate_number:
+            where_clauses.append("UPPER(plate_number) = ?")
+            values.append(plate_number)
+        if not where_clauses:
             return None
 
-        latest: VisitorRegistration | None = None
-        with self.path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                data = json.loads(line)
-                saved_plate = data.get("plate_number", "")
-                phone_matches = bool(phone and data.get("phone") == phone)
-                plate_matches = bool(plate_number and isinstance(saved_plate, str))
-                if plate_matches:
-                    plate_matches = saved_plate.upper() == plate_number
-                if phone_matches or plate_matches:
-                    latest = VisitorRegistration.model_validate(data)
-        return latest
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT plate_number, company, phone, reason, entry_time, caller, call_sid
+                FROM visitor_registrations
+                WHERE {" OR ".join(where_clauses)}
+                ORDER BY datetime(entry_time) DESC, id DESC
+                LIMIT 1
+                """,
+                values,
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_registration(row)
+
+    def recent_by_phone(
+        self,
+        phone: str,
+        *,
+        limit: int = 5,
+    ) -> list[VisitorRegistration]:
+        normalized_phone = _normalize_phone_lookup(phone)
+        if not normalized_phone or limit <= 0:
+            return []
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT plate_number, company, phone, reason, entry_time, caller, call_sid
+                FROM visitor_registrations
+                WHERE phone_lookup = ?
+                ORDER BY datetime(entry_time) DESC, id DESC
+                LIMIT ?
+                """,
+                (normalized_phone, limit),
+            ).fetchall()
+        return [self._row_to_registration(row) for row in rows]
