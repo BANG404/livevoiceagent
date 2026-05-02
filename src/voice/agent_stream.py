@@ -101,6 +101,10 @@ class LangGraphAudioAgent:
         )
         self._active_run_ids: dict[str, str] = {}
 
+    @property
+    def uses_stt(self) -> bool:
+        return self.stt is not None
+
     async def create_thread(self, metadata: Mapping[str, str]) -> str:
         thread = await self.client.threads.create(
             metadata={
@@ -111,26 +115,19 @@ class LangGraphAudioAgent:
         )
         return str(thread["thread_id"])
 
-    async def stream_reply_text(
+    async def transcribe_utterance(self, pcm16: bytes) -> str:
+        if self.stt is None:
+            raise RuntimeError("STT is not enabled for this agent.")
+
+        return (await self.stt.transcribe_pcm16(pcm16)).strip()
+
+    async def stream_reply_from_text(
         self,
         thread_id: str,
-        pcm16: bytes,
+        transcript: str,
         metadata: Mapping[str, str],
     ) -> AsyncIterator[str]:
-        if self.stt is not None:
-            try:
-                transcript = await self.stt.transcribe_pcm16(pcm16)
-            except Exception:
-                logger.exception("DashScope ASR transcription failed.")
-                yield "抱歉，刚才没听清，请再说一遍。"
-                return
-
-            if not transcript:
-                yield "抱歉，刚才没听清，请再说一遍。"
-                return
-            message = build_text_user_message(transcript)
-        else:
-            message = build_audio_user_message(pcm16, metadata)
+        message = build_text_user_message(transcript)
 
         async for part in self._stream_run(
             thread_id=thread_id,
@@ -139,6 +136,47 @@ class LangGraphAudioAgent:
         ):
             if text := extract_assistant_text_delta(part):
                 yield text
+
+    async def stream_reply_from_audio(
+        self,
+        thread_id: str,
+        pcm16: bytes,
+        metadata: Mapping[str, str],
+    ) -> AsyncIterator[str]:
+        message = build_audio_user_message(pcm16, metadata)
+
+        async for part in self._stream_run(
+            thread_id=thread_id,
+            message=message,
+            metadata=metadata,
+        ):
+            if text := extract_assistant_text_delta(part):
+                yield text
+
+    async def stream_reply_text(
+        self,
+        thread_id: str,
+        pcm16: bytes,
+        metadata: Mapping[str, str],
+    ) -> AsyncIterator[str]:
+        if not self.uses_stt:
+            async for text in self.stream_reply_from_audio(thread_id, pcm16, metadata):
+                yield text
+            return
+
+        try:
+            transcript = await self.transcribe_utterance(pcm16)
+        except Exception:
+            logger.exception("DashScope ASR transcription failed.")
+            yield "抱歉，刚才没听清，请再说一遍。"
+            return
+
+        if not transcript:
+            yield "抱歉，刚才没听清，请再说一遍。"
+            return
+
+        async for text in self.stream_reply_from_text(thread_id, transcript, metadata):
+            yield text
 
     async def stream_welcome_text(
         self,
