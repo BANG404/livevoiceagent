@@ -60,6 +60,9 @@ class Settings:
     vad_provider: str = _getenv("VAD_PROVIDER", "silero")
     silero_vad_threshold: float = _getfloat("SILERO_VAD_THRESHOLD", 0.5)
     silero_vad_min_silence_ms: int = _getint("SILERO_VAD_MIN_SILENCE_MS", 350)
+    langfuse_public_key: str = _getenv("LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: str = _getenv("LANGFUSE_SECRET_KEY")
+    langfuse_base_url: str = _getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")
 
     @property
     def websocket_base_url(self) -> str:

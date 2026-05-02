@@ -16,6 +16,7 @@ from agent.config import settings
 from agent.domain import VisitorRegistration, VisitorStore
 from agent.guard_notify import WeComWebhookNotifier
 from agent.models import build_agent_model
+from agent.tracing import build_langfuse_handler
 
 
 def build_system_prompt() -> str:
@@ -100,3 +101,7 @@ graph = create_agent(
     middleware=[CurrentUtcPromptMiddleware()],
     name="agent",
 )
+
+_langfuse_handler = build_langfuse_handler()
+if _langfuse_handler:
+    graph = graph.with_config({"callbacks": [_langfuse_handler]})
