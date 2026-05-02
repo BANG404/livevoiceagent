@@ -16,6 +16,7 @@ from langchain_core.tools import tool
 from agent.config import settings
 from agent.domain import VisitorStore
 from agent.models import build_agent_model
+from agent.tracing import build_langfuse_handler
 
 
 def build_query_system_prompt() -> str:
@@ -207,3 +208,7 @@ graph = create_agent(
     middleware=[GuardQueryPromptMiddleware()],
     name="guard_query",
 )
+
+_langfuse_handler = build_langfuse_handler()
+if _langfuse_handler:
+    graph = graph.with_config({"callbacks": [_langfuse_handler]})
