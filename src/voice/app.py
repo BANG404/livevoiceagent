@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any, Coroutine
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -24,6 +25,17 @@ from voice.audio import (
 from voice.speech import TextToSpeech, build_tts
 
 app = FastAPI(title="Live Voice Visitor Agent")
+TRANSCRIPT_MERGE_GRACE_SECONDS = 0.6
+
+
+@dataclass
+class _CallState:
+    response_task: asyncio.Task[None] | None = None
+    flush_task: asyncio.Task[None] | None = None
+    stt_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    pending_transcripts: list[str] = field(default_factory=list)
+    transcription_failed: bool = False
+    user_speaking: bool = False
 
 
 @app.get("/health")
@@ -62,7 +74,7 @@ async def twilio_media(websocket: WebSocket) -> None:
     tts = build_tts(settings)
     agent = LangGraphAudioAgent(settings)
     thread_id = ""
-    response_task: asyncio.Task[None] | None = None
+    call_state = _CallState()
 
     try:
         while True:
@@ -77,8 +89,8 @@ async def twilio_media(websocket: WebSocket) -> None:
                 )
                 thread_id = await agent.create_thread(metadata)
                 recent_visits = await _recent_visits_for_caller(metadata)
-                response_task = await _replace_response_task(
-                    response_task,
+                call_state.response_task = await _replace_response_task(
+                    call_state.response_task,
                     _stream_agent_reply(
                         websocket,
                         stream_sid,
@@ -92,25 +104,26 @@ async def twilio_media(websocket: WebSocket) -> None:
                 pcm16 = mulaw_payload_to_pcm16(event["media"]["payload"])
                 utterance = utterances.push(pcm16)
                 if utterances.consume_speech_started():
-                    response_task = await _cancel_response_task(
-                        response_task,
+                    call_state.user_speaking = True
+                    call_state.flush_task = await _cancel_task(call_state.flush_task)
+                    call_state.response_task = await _cancel_response_task(
+                        call_state.response_task,
                         websocket,
                         stream_sid,
                         agent=agent,
                         thread_id=thread_id,
                     )
                 if utterance:
-                    response_task = await _replace_response_task(
-                        response_task,
-                        _handle_utterance(
-                            websocket,
-                            stream_sid,
-                            utterance,
-                            agent,
-                            thread_id,
-                            tts,
-                            metadata,
-                        ),
+                    call_state.user_speaking = False
+                    await _handle_utterance(
+                        websocket,
+                        stream_sid,
+                        utterance,
+                        agent,
+                        thread_id,
+                        tts,
+                        metadata,
+                        call_state,
                     )
                 continue
 
@@ -119,8 +132,10 @@ async def twilio_media(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         return
     finally:
+        call_state.flush_task = await _cancel_task(call_state.flush_task)
+        await _cancel_stt_tasks(call_state)
         await _cancel_response_task(
-            response_task,
+            call_state.response_task,
             websocket,
             stream_sid,
             agent=agent,
@@ -137,16 +152,36 @@ async def _handle_utterance(
     thread_id: str,
     tts: TextToSpeech,
     metadata: dict[str, str],
+    call_state: _CallState,
 ) -> None:
     if not thread_id:
         return
 
-    await _stream_agent_reply(
-        websocket,
-        stream_sid,
-        agent.stream_reply_text(thread_id, pcm16, metadata),
-        tts,
+    if not agent.uses_stt:
+        call_state.response_task = await _replace_response_task(
+            call_state.response_task,
+            _stream_agent_reply(
+                websocket,
+                stream_sid,
+                agent.stream_reply_from_audio(thread_id, pcm16, metadata),
+                tts,
+            ),
+        )
+        return
+
+    task = asyncio.create_task(
+        _transcribe_utterance(
+            websocket,
+            stream_sid,
+            pcm16,
+            agent,
+            thread_id,
+            tts,
+            metadata,
+            call_state,
+        )
     )
+    call_state.stt_tasks.add(task)
 
 
 async def _stream_agent_reply(
@@ -184,6 +219,27 @@ async def _replace_response_task(
     return asyncio.create_task(coro)
 
 
+async def _cancel_task(
+    task: asyncio.Task[None] | None,
+) -> asyncio.Task[None] | None:
+    if task is None:
+        return None
+    if not task.done():
+        task.cancel()
+    await _await_response_task(task)
+    return None
+
+
+async def _cancel_stt_tasks(call_state: _CallState) -> None:
+    tasks = list(call_state.stt_tasks)
+    call_state.stt_tasks.clear()
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    for task in tasks:
+        await _await_response_task(task)
+
+
 async def _cancel_response_task(
     task: asyncio.Task[None] | None,
     websocket: WebSocket,
@@ -206,6 +262,112 @@ async def _cancel_response_task(
     with contextlib.suppress(RuntimeError, WebSocketDisconnect):
         await _send_clear(websocket, stream_sid)
     return None
+
+
+async def _transcribe_utterance(
+    websocket: WebSocket,
+    stream_sid: str,
+    pcm16: bytes,
+    agent: LangGraphAudioAgent,
+    thread_id: str,
+    tts: TextToSpeech,
+    metadata: dict[str, str],
+    call_state: _CallState,
+) -> None:
+    try:
+        transcript = await agent.transcribe_utterance(pcm16)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        call_state.transcription_failed = True
+    else:
+        if transcript:
+            call_state.pending_transcripts.append(transcript)
+        else:
+            call_state.transcription_failed = True
+    finally:
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            call_state.stt_tasks.discard(current_task)
+
+    await _schedule_pending_reply(
+        websocket,
+        stream_sid,
+        agent,
+        thread_id,
+        tts,
+        metadata,
+        call_state,
+    )
+
+
+async def _schedule_pending_reply(
+    websocket: WebSocket,
+    stream_sid: str,
+    agent: LangGraphAudioAgent,
+    thread_id: str,
+    tts: TextToSpeech,
+    metadata: dict[str, str],
+    call_state: _CallState,
+) -> None:
+    call_state.flush_task = await _cancel_task(call_state.flush_task)
+    if call_state.user_speaking or call_state.stt_tasks:
+        return
+    if not call_state.pending_transcripts and not call_state.transcription_failed:
+        return
+
+    call_state.flush_task = asyncio.create_task(
+        _flush_pending_reply(
+            websocket,
+            stream_sid,
+            agent,
+            thread_id,
+            tts,
+            metadata,
+            call_state,
+        )
+    )
+
+
+async def _flush_pending_reply(
+    websocket: WebSocket,
+    stream_sid: str,
+    agent: LangGraphAudioAgent,
+    thread_id: str,
+    tts: TextToSpeech,
+    metadata: dict[str, str],
+    call_state: _CallState,
+) -> None:
+    await asyncio.sleep(TRANSCRIPT_MERGE_GRACE_SECONDS)
+    if call_state.user_speaking or call_state.stt_tasks:
+        return
+
+    if call_state.pending_transcripts:
+        merged_transcript = "\n".join(call_state.pending_transcripts)
+        call_state.pending_transcripts.clear()
+        call_state.transcription_failed = False
+        call_state.response_task = await _replace_response_task(
+            call_state.response_task,
+            _stream_agent_reply(
+                websocket,
+                stream_sid,
+                agent.stream_reply_from_text(thread_id, merged_transcript, metadata),
+                tts,
+            ),
+        )
+        return
+
+    if call_state.transcription_failed:
+        call_state.transcription_failed = False
+        call_state.response_task = await _replace_response_task(
+            call_state.response_task,
+            _stream_agent_reply(
+                websocket,
+                stream_sid,
+                _single_text_reply("抱歉，刚才没听清，请再说一遍。"),
+                tts,
+            ),
+        )
 
 
 async def _await_response_task(task: asyncio.Task[None]) -> None:
@@ -263,6 +425,10 @@ async def _tts_segments(
     for text in segmenter.flush():
         async for pcm16 in tts.stream_pcm16(text):
             yield pcm16
+
+
+async def _single_text_reply(text: str) -> AsyncIterator[str]:
+    yield text
 
 
 class TextDeltaSegmenter:
