@@ -1,8 +1,10 @@
 # Live Voice Visitor Agent
 
-工业园区访客语音登记系统：访客拨入 Twilio 号码，AI Agent 采集车牌、单位、手机、事由后推送企业微信门卫群。
+**[English](README.md) | [中文](README.zh.md)**
 
-## 架构
+AI-powered voice visitor registration system for industrial parks. Visitors call a Twilio number and speak naturally with an AI Agent that collects license plate, company name, phone number, and visit reason, then notifies security via WeChat.
+
+## Architecture
 
 ```
 Caller ──► Twilio ──► FastAPI /voice + /twilio/media (WebSocket)
@@ -16,60 +18,75 @@ Caller ──► Twilio ──► FastAPI /voice + /twilio/media (WebSocket)
 Guard ──► WeCom AI Bot ──► LangGraph guard_query ──► SQLite analytics
 ```
 
-## 快速部署
+## Quick Start
 
 ```bash
-# 1. 安装依赖
+# 1. Install dependencies
 make sync
-cp .env.example .env   # 填写下方必填变量
+cp .env.example .env   # Fill in required environment variables below
 
-# 2. 本地启动（LangGraph dev server + FastAPI）
+# 2. Start locally (LangGraph dev server + FastAPI)
 make dev
 
-# 3. 暴露给 Twilio
+# 3. Expose to Twilio
 ngrok http 8000
 
-# 4. Twilio 控制台配置 Webhook
+# 4. Configure Twilio webhook in console
 #    POST https://<ngrok-url>/voice
 ```
 
-可选：启动企业微信查询机器人
+Optional: Start WeChat guard query bot
 
 ```bash
 make wecom-bot
 ```
 
-本地麦克风测试（无需 Twilio）：
+Local microphone test (no Twilio required):
 
 ```bash
 make ws-chat
 ```
 
-## 环境变量
+## Environment Variables
 
-| 变量 | 说明 | 示例 |
-|------|------|------|
-| `AGENT_MODEL` | LLM（provider:model） | `google_genai:gemini-2.5-flash` |
-| `GOOGLE_API_KEY` | Google GenAI 密钥 | — |
-| `OPENAI_API_KEY` | OpenAI 兼容密钥（openai: 前缀时） | — |
-| `OPENAI_BASE_URL` | 自定义 OpenAI gateway（可选） | — |
-| `STT_PROVIDER` | 留空=模型直接理解音频；`dashscope`=先转文字 | — |
-| `DASHSCOPE_API_KEY` | 阿里云 DashScope ASR 密钥 | — |
-| `PUBLIC_BASE_URL` | Twilio 可访问的公网 URL | `https://xxx.ngrok.io` |
-| `GUARD_WECHAT_WEBHOOK` | 企业微信群机器人 Webhook | — |
-| `WECOM_BOT_ID` | 企业微信 AI Bot ID | — |
-| `WECOM_BOT_SECRET` | 企业微信 AI Bot Secret | — |
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `AGENT_MODEL` | LLM (provider:model) | `google_genai:gemini-2.5-flash` |
+| `GOOGLE_API_KEY` | Google GenAI API key | — |
+| `OPENAI_API_KEY` | OpenAI-compatible API key (for openai: prefix) | — |
+| `OPENAI_BASE_URL` | Custom OpenAI gateway (optional) | — |
+| `STT_PROVIDER` | Empty = model hears audio directly; `dashscope` = transcribe first | — |
+| `DASHSCOPE_API_KEY` | Alibaba DashScope ASR key | — |
+| `PUBLIC_BASE_URL` | Public URL accessible by Twilio | `https://xxx.ngrok.io` |
+| `GUARD_WECHAT_WEBHOOK` | WeChat group bot webhook | — |
+| `WECOM_BOT_ID` | WeChat AI Bot ID | — |
+| `WECOM_BOT_SECRET` | WeChat AI Bot secret | — |
 | `LANGGRAPH_API_URL` | LangGraph dev server | `http://127.0.0.1:2024` |
-| `TTS_PROVIDER` | `kokoro`（默认）或 `silence`（测试） | `kokoro` |
-| `VAD_PROVIDER` | `silero`（默认） | `silero` |
-| `VISITOR_STORE_PATH` | SQLite 路径 | `data/visitors.sqlite3` |
+| `TTS_PROVIDER` | `kokoro` (default) or `silence` (testing) | `kokoro` |
+| `VAD_PROVIDER` | `silero` (default) | `silero` |
+| `VISITOR_STORE_PATH` | SQLite database path | `data/visitors.sqlite3` |
 
-完整变量列表见 `.env.example`。
+See `.env.example` for the complete list of variables.
 
-## 测试
+## Testing
 
 ```bash
-make test               # 单元测试
-make integration-tests  # 集成测试
-make lint               # Ruff 检查
+make test               # Unit tests
+make integration-tests  # Integration tests
+make lint               # Ruff checks
+make format             # Auto-format with Ruff
 ```
+
+## Development
+
+The project uses `uv` for fast Python dependency management:
+
+- **Agent Layer** (`src/agent/`): LangGraph workflows, domain models, registration tools, WeChat notifications
+- **Voice Layer** (`src/voice/`): FastAPI/Twilio webhooks, audio handling, speech adapters, WebSocket streaming
+- **Tests** (`tests/`): Unit tests and integration tests with shared fixtures
+
+For more detailed architecture and development notes, see `CLAUDE.md`.
+
+## License
+
+MIT License - see `LICENSE` for details.
