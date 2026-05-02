@@ -1,11 +1,17 @@
+import asyncio
 import subprocess
 
 import pytest
+import voice.live_ws_client as live_ws_client
 
 from voice.live_ws_client import (
     LocalTurnDetector,
     PulseAudioBridge,
     choose_audio_bridge,
+    detect_pulse_server,
+    is_wsl_pulse_available,
+    list_pulse_devices,
+    main,
     normalize_command,
     parse_args,
     parse_device,
@@ -123,6 +129,53 @@ def test_parse_device_supports_int_and_string() -> None:
     assert parse_device(None) is None
 
 
+def test_detect_pulse_server_prefers_existing_env_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PULSE_SERVER", "unix:/tmp/pulse")
+    monkeypatch.setattr(
+        "os.path.exists",
+        lambda path: path in {"/tmp/pulse"}
+        and path != "/mnt/wslg/runtime-dir/pulse/native",
+    )
+
+    assert detect_pulse_server() == "unix:/tmp/pulse"
+
+
+def test_detect_pulse_server_falls_back_to_wslg_runtime_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PULSE_SERVER", raising=False)
+    monkeypatch.setattr(
+        "os.path.exists",
+        lambda path: path == "/mnt/wslg/runtime-dir/pulse/native",
+    )
+
+    assert detect_pulse_server() == "unix:/mnt/wslg/runtime-dir/pulse/native"
+
+
+def test_detect_pulse_server_prefers_wslg_runtime_socket_over_stale_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PULSE_SERVER", "unix:/mnt/wslg/PulseServer")
+    monkeypatch.setattr(
+        "os.path.exists",
+        lambda path: path == "/mnt/wslg/runtime-dir/pulse/native",
+    )
+
+    assert detect_pulse_server() == "unix:/mnt/wslg/runtime-dir/pulse/native"
+
+
+def test_is_wsl_pulse_available_uses_detected_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PULSE_SERVER", "unix:/tmp/pulse")
+    monkeypatch.setattr("os.path.exists", lambda path: path == "/tmp/pulse")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/parec" if name == "parec" else None)
+
+    assert is_wsl_pulse_available() is True
+
+
 def test_pulseaudio_bridge_start_fails_fast_when_backend_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -169,6 +222,56 @@ def test_pulseaudio_bridge_start_fails_fast_when_backend_is_unavailable(
         RuntimeError, match="PulseAudio command `parec` failed to start"
     ):
         bridge.start()
+
+
+def test_list_pulse_devices_requires_server_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/pactl")
+    monkeypatch.setattr("os.path.exists", lambda _path: False)
+    monkeypatch.delenv("PULSE_SERVER", raising=False)
+
+    with pytest.raises(RuntimeError, match="No PulseAudio server is configured"):
+        list_pulse_devices()
+
+
+def test_list_pulse_devices_wraps_pactl_failure_with_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/pactl")
+    monkeypatch.setattr("os.path.exists", lambda path: path == "/tmp/pulse")
+    monkeypatch.setenv("PULSE_SERVER", "unix:/tmp/pulse")
+
+    def fake_run(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise subprocess.CalledProcessError(
+            1,
+            ["pactl", "list", "short", "sources"],
+            stderr="Connection failure: Connection refused",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(
+        RuntimeError,
+        match="using unix:/tmp/pulse: Connection failure: Connection refused",
+    ):
+        list_pulse_devices()
+
+
+def test_main_returns_1_for_runtime_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        "voice.live_ws_client.async_main",
+        lambda _argv=None: (_ for _ in ()).throw(RuntimeError("pulse failed")),
+    )
+
+    exit_code = main(["--list-pulse-devices"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err.strip() == "error: pulse failed"
 
 
 def test_choose_audio_bridge_prefers_pulseaudio_on_wsl(
@@ -218,3 +321,68 @@ def test_choose_audio_bridge_falls_back_to_sounddevice_when_pulse_fails_on_wsl(
 
     assert bridge is local_bridge
     assert backend == "sounddevice"
+
+
+def test_run_live_session_falls_back_when_pulse_start_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class FakePulseBridge:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def start(self) -> None:
+            raise RuntimeError("pulse start failed")
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    class FakeLocalBridge:
+        def __init__(self, **_kwargs: object) -> None:
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def close(self) -> None:
+            return None
+
+    class FakeWebSocket:
+        async def send(self, _payload: str) -> None:
+            return None
+
+    class FakeConnect:
+        async def __aenter__(self) -> FakeWebSocket:
+            return FakeWebSocket()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+    pulse_bridge = FakePulseBridge()
+    local_bridge = FakeLocalBridge()
+
+    monkeypatch.setattr(
+        live_ws_client,
+        "choose_audio_bridge",
+        lambda **_kwargs: (pulse_bridge, "pulseaudio"),
+    )
+    monkeypatch.setattr(
+        live_ws_client,
+        "LocalAudioBridge",
+        lambda **_kwargs: local_bridge,
+    )
+    monkeypatch.setattr(live_ws_client, "connect", lambda *args, **kwargs: FakeConnect())
+    monkeypatch.setattr(live_ws_client, "receive_agent_audio", lambda *args, **kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(live_ws_client, "send_microphone_audio", lambda *args, **kwargs: asyncio.sleep(0))
+
+    async def fake_command_loop(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(live_ws_client, "command_loop", fake_command_loop)
+
+    asyncio.run(live_ws_client.run_live_session("ws://localhost:8000/twilio/media"))
+
+    captured = capsys.readouterr()
+    assert pulse_bridge.closed is True
+    assert local_bridge.started is True
+    assert "PulseAudio startup failed, falling back to sounddevice: pulse start failed" in captured.out
+    assert "audio backend: sounddevice" in captured.out

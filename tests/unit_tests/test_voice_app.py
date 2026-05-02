@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import wave
 from io import BytesIO
 
@@ -16,8 +17,10 @@ from voice.agent_stream import (
 import voice.app as voice_app_module
 from voice.app import (
     TextDeltaSegmenter,
+    _CallState,
     _parse_custom_parameters,
     _recent_visits_for_caller,
+    _transcribe_utterance,
     app,
 )
 
@@ -161,3 +164,93 @@ async def test_recent_visits_for_caller_reads_store_async(
 
     assert len(recent) == 1
     assert recent[0].plate_number == "沪A12345"
+
+
+@pytest.mark.anyio
+async def test_transcribe_utterance_merges_segments_before_agent_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.events: list[dict[str, str]] = []
+
+        async def send_json(self, payload: dict[str, str]) -> None:
+            self.events.append(payload)
+
+    class FakeTts:
+        async def stream_pcm16(self, text: str):
+            yield b"\x01\x00" * 160
+
+    class FakeAgent:
+        uses_stt = True
+
+        def __init__(self) -> None:
+            self.transcripts = ["我的车牌沪A12345", "来送货"]
+            self.reply_inputs: list[str] = []
+
+        async def transcribe_utterance(self, pcm16: bytes) -> str:
+            assert pcm16
+            await asyncio.sleep(0.01)
+            return self.transcripts.pop(0)
+
+        async def stream_reply_from_text(
+            self,
+            thread_id: str,
+            transcript: str,
+            metadata: dict[str, str],
+        ):
+            assert thread_id == "thread-1"
+            assert metadata["call_sid"] == "CA123"
+            self.reply_inputs.append(transcript)
+            yield f"收到：{transcript}"
+
+    monkeypatch.setattr(voice_app_module, "TRANSCRIPT_MERGE_GRACE_SECONDS", 0.01)
+
+    websocket = FakeWebSocket()
+    agent = FakeAgent()
+    tts = FakeTts()
+    call_state = _CallState(user_speaking=True)
+    metadata = {"call_sid": "CA123", "caller": "+8613800001234"}
+
+    first_task = asyncio.create_task(
+        _transcribe_utterance(
+            websocket,
+            "MZ123",
+            b"\x01\x00" * 160,
+            agent,
+            "thread-1",
+            tts,
+            metadata,
+            call_state,
+        )
+    )
+    call_state.stt_tasks.add(first_task)
+    await first_task
+
+    assert agent.reply_inputs == []
+    assert call_state.pending_transcripts == ["我的车牌沪A12345"]
+
+    call_state.user_speaking = False
+    second_task = asyncio.create_task(
+        _transcribe_utterance(
+            websocket,
+            "MZ123",
+            b"\x02\x00" * 160,
+            agent,
+            "thread-1",
+            tts,
+            metadata,
+            call_state,
+        )
+    )
+    call_state.stt_tasks.add(second_task)
+    await second_task
+
+    if call_state.flush_task is not None:
+        await call_state.flush_task
+    if call_state.response_task is not None:
+        await call_state.response_task
+
+    assert agent.reply_inputs == ["我的车牌沪A12345\n来送货"]
+    assert call_state.pending_transcripts == []
+    assert websocket.events

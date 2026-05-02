@@ -27,6 +27,7 @@ class _FakeAgent:
     def __init__(self, settings) -> None:
         self.closed = False
         self.cancelled_threads: list[str] = []
+        self.uses_stt = False
 
     async def create_thread(self, metadata: dict[str, str]) -> str:
         assert metadata["call_sid"] == "CA123"
@@ -45,7 +46,7 @@ class _FakeAgent:
         assert recent_visits[0].plate_number == "沪A12345"
         yield "张师傅您好，今天还是来蓝色鲸鱼送货吗？"
 
-    async def stream_reply_text(
+    async def stream_reply_from_audio(
         self,
         thread_id: str,
         pcm16: bytes,
@@ -122,7 +123,7 @@ class _FakeStore:
 def test_twilio_media_websocket_accepts_local_client(monkeypatch) -> None:
     monkeypatch.setattr(voice_app_module, "UtteranceBuffer", _ImmediateUtteranceBuffer)
     monkeypatch.setattr(voice_app_module, "LangGraphAudioAgent", _FakeAgent)
-    monkeypatch.setattr(voice_app_module, "build_tts", lambda settings: _FakeTts())
+    monkeypatch.setattr(voice_app_module, "build_tts", lambda settings: _SlowTts())
     monkeypatch.setattr(voice_app_module, "VisitorStore", _FakeStore)
 
     client = TestClient(app)
