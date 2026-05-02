@@ -10,6 +10,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -29,6 +30,11 @@ from voice.ws_test_client import build_media_event, build_start_event, build_sto
 
 
 TAIL_FRAME_MS = 20
+PULSE_PLAYBACK_TAIL_S = 0.5  # PulseAudio internal buffer drain time after queue empties
+WSLG_PULSE_CANDIDATES = (
+    "/mnt/wslg/runtime-dir/pulse/native",
+    "/mnt/wslg/PulseServer",
+)
 
 
 def tail_silence_frames(tail_silence_ms: int) -> int:
@@ -37,6 +43,27 @@ def tail_silence_frames(tail_silence_ms: int) -> int:
 
 def normalize_command(command: str) -> str:
     return command.strip().lower()
+
+
+def detect_pulse_server() -> str | None:
+    configured = os.environ.get("PULSE_SERVER", "").strip()
+    candidate_servers = [f"unix:{path}" for path in WSLG_PULSE_CANDIDATES]
+
+    # Prefer the known-good WSLg runtime socket over a stale shell override.
+    for server in candidate_servers:
+        socket_path = server.removeprefix("unix:")
+        if os.path.exists(socket_path):
+            return server
+
+    if configured:
+        if configured.startswith("unix:"):
+            socket_path = configured.removeprefix("unix:")
+            if os.path.exists(socket_path):
+                return configured
+        else:
+            return configured
+
+    return None
 
 
 @dataclass
@@ -128,22 +155,39 @@ class LocalAudioBridge:
         self.input_queue: queue.Queue[bytes] = queue.Queue(maxsize=max_queue_frames)
         self.output_queue: queue.Queue[bytes] = queue.Queue(maxsize=max_queue_frames)
         self.playback_active = False
-        self.input_stream = sd.RawInputStream(
-            samplerate=sample_rate,
-            blocksize=frame_bytes // 2,
-            channels=channels,
-            dtype="int16",
-            device=input_device,
-            callback=self._on_input,
-        )
-        self.output_stream = sd.RawOutputStream(
-            samplerate=sample_rate,
-            blocksize=frame_bytes // 2,
-            channels=channels,
-            dtype="int16",
-            device=output_device,
-            callback=self._on_output,
-        )
+        input_stream = None
+        try:
+            input_stream = sd.RawInputStream(
+                samplerate=sample_rate,
+                blocksize=frame_bytes // 2,
+                channels=channels,
+                dtype="int16",
+                device=input_device,
+                callback=self._on_input,
+            )
+            output_stream = sd.RawOutputStream(
+                samplerate=sample_rate,
+                blocksize=frame_bytes // 2,
+                channels=channels,
+                dtype="int16",
+                device=output_device,
+                callback=self._on_output,
+            )
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                if input_stream is not None:
+                    input_stream.close()
+            requested_input = input_device if input_device is not None else "default"
+            requested_output = output_device if output_device is not None else "default"
+            raise RuntimeError(
+                "sounddevice could not open local audio devices "
+                f"(input={requested_input}, output={requested_output}): {exc}. "
+                "Run `rtk uv run python scripts/live_ws_voice_chat.py --list-devices` "
+                "to inspect available devices."
+            ) from exc
+
+        self.input_stream = input_stream
+        self.output_stream = output_stream
 
     def start(self) -> None:
         self.input_stream.start()
@@ -247,13 +291,15 @@ class PulseAudioBridge:
         self.capture_task: asyncio.Task[None] | None = None
         self.playback_task: asyncio.Task[None] | None = None
         self.playback_active = False
+        self._last_frame_written: float = 0.0
         self.startup_retries = max(1, startup_retries)
         self.startup_retry_delay = max(0.0, startup_retry_delay)
 
     def start(self) -> None:
         env = os.environ.copy()
-        if not env.get("PULSE_SERVER") and os.path.exists("/mnt/wslg/PulseServer"):
-            env["PULSE_SERVER"] = "unix:/mnt/wslg/PulseServer"
+        pulse_server = detect_pulse_server()
+        if pulse_server:
+            env["PULSE_SERVER"] = pulse_server
         parec_cmd = [
             "parec",
             "--format=s16le",
@@ -342,9 +388,15 @@ class PulseAudioBridge:
             with contextlib.suppress(queue.Empty):
                 self.output_queue.get_nowait()
         self.playback_active = False
+        self._last_frame_written = 0.0
 
     def is_output_active(self) -> bool:
-        return self.playback_active
+        if self.playback_active:
+            return True
+        return (
+            self._last_frame_written > 0
+            and (time.monotonic() - self._last_frame_written) < PULSE_PLAYBACK_TAIL_S
+        )
 
     async def _capture_loop(self) -> None:
         assert self.capture_process is not None
@@ -372,6 +424,7 @@ class PulseAudioBridge:
             self.playback_active = True
             await asyncio.to_thread(self.playback_process.stdin.write, frame)
             await asyncio.to_thread(self.playback_process.stdin.flush)
+            self._last_frame_written = time.monotonic()
             if self.output_queue.empty():
                 self.playback_active = False
 
@@ -427,7 +480,7 @@ class PulseAudioBridge:
 
 
 def is_wsl_pulse_available() -> bool:
-    return os.path.exists("/mnt/wslg/PulseServer") and shutil.which("parec") is not None
+    return detect_pulse_server() is not None and shutil.which("parec") is not None
 
 
 def choose_audio_bridge(
@@ -699,10 +752,33 @@ async def run_live_session(
         input_device=input_device,
         output_device=output_device,
     )
-    starter = getattr(audio_bridge, "start")
     close_async = getattr(audio_bridge, "aclose", None)
     close_sync = getattr(audio_bridge, "close", None)
-    starter()
+    try:
+        audio_bridge.start()
+    except Exception as pulse_exc:
+        if backend != "pulseaudio":
+            raise
+        if close_async is not None:
+            await close_async()
+        elif close_sync is not None:
+            close_sync()
+        try:
+            audio_bridge = LocalAudioBridge(
+                input_device=input_device if isinstance(input_device, int) else None,
+                output_device=output_device if isinstance(output_device, int) else None,
+            )
+            close_async = getattr(audio_bridge, "aclose", None)
+            close_sync = getattr(audio_bridge, "close", None)
+            audio_bridge.start()
+            backend = "sounddevice"
+            print(f"PulseAudio startup failed, falling back to sounddevice: {pulse_exc}")
+        except Exception as sounddevice_exc:
+            raise RuntimeError(
+                "Failed to initialize local audio. "
+                f"PulseAudio failed first during startup: {pulse_exc}. "
+                f"sounddevice fallback failed next: {sounddevice_exc}"
+            ) from sounddevice_exc
     print(f"audio backend: {backend}")
 
     try:
@@ -777,20 +853,46 @@ def list_pulse_devices() -> int:
     if shutil.which("pactl") is None:
         raise RuntimeError("`pactl` is required to list PulseAudio devices.")
 
-    result = subprocess.run(
-        ["pactl", "list", "short", "sources"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    env = os.environ.copy()
+    pulse_server = detect_pulse_server()
+    if not pulse_server:
+        raise RuntimeError(
+            "No PulseAudio server is configured. On WSL, start a WSLg session "
+            "or set PULSE_SERVER manually before listing PulseAudio devices."
+        )
+    env["PULSE_SERVER"] = pulse_server
+
+    try:
+        result = subprocess.run(
+            ["pactl", "list", "short", "sources"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = " ".join((exc.stderr or "").split())
+        detail = f" using {pulse_server}: {stderr}" if stderr else f" using {pulse_server}."
+        raise RuntimeError(
+            "Failed to query PulseAudio sources via `pactl`" + detail
+        ) from exc
     print("sources:")
     print(result.stdout.rstrip())
-    result = subprocess.run(
-        ["pactl", "list", "short", "sinks"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+
+    try:
+        result = subprocess.run(
+            ["pactl", "list", "short", "sinks"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = " ".join((exc.stderr or "").split())
+        detail = f" using {pulse_server}: {stderr}" if stderr else f" using {pulse_server}."
+        raise RuntimeError(
+            "Failed to query PulseAudio sinks via `pactl`" + detail
+        ) from exc
     print("sinks:")
     print(result.stdout.rstrip())
     return 0
@@ -931,7 +1033,11 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    return asyncio.run(async_main(argv))
+    try:
+        return asyncio.run(async_main(argv))
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 __all__ = [
