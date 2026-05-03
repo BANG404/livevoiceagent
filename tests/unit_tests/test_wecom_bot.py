@@ -1,9 +1,11 @@
+import types
 from types import SimpleNamespace
 
 import pytest
 from langgraph_sdk.schema import StreamPart
 from wecom_aibot_sdk.types import WsFrame, WsFrameHeaders
 
+import wecom_bot.bridge as bridge_module
 from wecom_bot.assistant import (
     GuardQueryEvent,
     build_query_user_message,
@@ -11,6 +13,19 @@ from wecom_bot.assistant import (
     resolve_thread_key,
 )
 from wecom_bot.bridge import WeComGuardQueryBot, _StreamBlock
+
+
+_BOT_SETTINGS = SimpleNamespace(
+    wecom_bot_id="bot-123",
+    wecom_bot_secret="secret-xyz",
+    wecom_ws_url="wss://example.invalid",
+    wecom_heartbeat_seconds=30,
+    wecom_log_level="INFO",
+    wecom_welcome_message="你好",
+    langgraph_api_url="http://127.0.0.1:2024",
+    langgraph_api_key="",
+    wecom_query_assistant_id="guard_query",
+)
 
 
 def test_build_query_user_message_embeds_wecom_context() -> None:
@@ -56,19 +71,7 @@ def test_extract_assistant_text_delta_from_stream_part() -> None:
 
 @pytest.mark.anyio
 async def test_wecom_bot_rejects_unsupported_message_type() -> None:
-    bot = WeComGuardQueryBot(
-        SimpleNamespace(
-            wecom_bot_id="bot-123",
-            wecom_bot_secret="secret-xyz",
-            wecom_ws_url="wss://example.invalid",
-            wecom_heartbeat_seconds=30,
-            wecom_log_level="INFO",
-            wecom_welcome_message="你好",
-            langgraph_api_url="http://127.0.0.1:2024",
-            langgraph_api_key="",
-            wecom_query_assistant_id="guard_query",
-        )
-    )
+    bot = WeComGuardQueryBot(_BOT_SETTINGS)
 
     replies: list[tuple[WsFrame, dict[str, object]]] = []
 
@@ -90,17 +93,7 @@ async def test_wecom_bot_rejects_unsupported_message_type() -> None:
 @pytest.mark.anyio
 async def test_wecom_bot_sends_welcome_reply() -> None:
     bot = WeComGuardQueryBot(
-        SimpleNamespace(
-            wecom_bot_id="bot-123",
-            wecom_bot_secret="secret-xyz",
-            wecom_ws_url="wss://example.invalid",
-            wecom_heartbeat_seconds=30,
-            wecom_log_level="INFO",
-            wecom_welcome_message="欢迎使用",
-            langgraph_api_url="http://127.0.0.1:2024",
-            langgraph_api_key="",
-            wecom_query_assistant_id="guard_query",
-        )
+        SimpleNamespace(**{**vars(_BOT_SETTINGS), "wecom_welcome_message": "欢迎使用"})
     )
 
     welcomes: list[dict[str, object]] = []
@@ -117,19 +110,7 @@ async def test_wecom_bot_sends_welcome_reply() -> None:
 
 
 def test_wecom_bot_renders_stream_blocks_in_order() -> None:
-    bot = WeComGuardQueryBot(
-        SimpleNamespace(
-            wecom_bot_id="bot-123",
-            wecom_bot_secret="secret-xyz",
-            wecom_ws_url="wss://example.invalid",
-            wecom_heartbeat_seconds=30,
-            wecom_log_level="INFO",
-            wecom_welcome_message="欢迎使用",
-            langgraph_api_url="http://127.0.0.1:2024",
-            langgraph_api_key="",
-            wecom_query_assistant_id="guard_query",
-        )
-    )
+    bot = WeComGuardQueryBot(_BOT_SETTINGS)
 
     markdown = bot._render_blocks(
         [
@@ -143,19 +124,7 @@ def test_wecom_bot_renders_stream_blocks_in_order() -> None:
 
 @pytest.mark.anyio
 async def test_wecom_bot_consumes_tool_events_into_markdown() -> None:
-    bot = WeComGuardQueryBot(
-        SimpleNamespace(
-            wecom_bot_id="bot-123",
-            wecom_bot_secret="secret-xyz",
-            wecom_ws_url="wss://example.invalid",
-            wecom_heartbeat_seconds=30,
-            wecom_log_level="INFO",
-            wecom_welcome_message="欢迎使用",
-            langgraph_api_url="http://127.0.0.1:2024",
-            langgraph_api_key="",
-            wecom_query_assistant_id="guard_query",
-        )
-    )
+    bot = WeComGuardQueryBot(_BOT_SETTINGS)
 
     streams: list[str] = []
 
@@ -197,3 +166,56 @@ async def test_wecom_bot_consumes_tool_events_into_markdown() -> None:
     assert streams[-1].index("`count_visitor_registrations` 已返回结果") < streams[
         -1
     ].index("本周一共 4 辆。")
+
+
+# ---------------------------------------------------------------------------
+# run_forever (reconnection loop)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_run_forever_calls_connect_and_exits_when_not_connected() -> None:
+    bot = WeComGuardQueryBot(_BOT_SETTINGS)
+
+    connect_calls: list[bool] = []
+
+    class _FakeClient:
+        is_connected = False
+
+        async def connect_async(self) -> None:
+            connect_calls.append(True)
+
+    bot.client = _FakeClient()
+    await bot.run_forever()
+
+    assert connect_calls == [True]
+
+
+@pytest.mark.anyio
+async def test_run_forever_loops_while_connected_then_exits(monkeypatch) -> None:
+    bot = WeComGuardQueryBot(_BOT_SETTINGS)
+
+    sleep_durations: list[float] = []
+
+    async def fast_sleep(seconds: float) -> None:
+        sleep_durations.append(seconds)
+
+    monkeypatch.setattr(bridge_module, "asyncio", types.SimpleNamespace(sleep=fast_sleep))
+
+    check_count = 0
+
+    class _FakeClient:
+        @property
+        def is_connected(self) -> bool:
+            nonlocal check_count
+            check_count += 1
+            return check_count <= 2
+
+        async def connect_async(self) -> None:
+            pass
+
+    bot.client = _FakeClient()
+    await bot.run_forever()
+
+    assert sleep_durations == [1, 1]
+    assert check_count == 3  # 2× True then 1× False
