@@ -49,55 +49,85 @@ def _normalize_phone_lookup(phone: str | None) -> str:
     return digits
 
 
+_store_instances: dict[str, "VisitorStore"] = {}
+
+
 class VisitorStore:
     def __init__(self, path: str) -> None:
         self.path = Path(path)
         self._ensure_schema()
 
+    @classmethod
+    def get(cls, path: str) -> "VisitorStore":
+        if path not in _store_instances:
+            _store_instances[path] = cls(path)
+        return _store_instances[path]
+
+    _SCHEMA_VERSION = 1
+
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
         return connection
 
     def _ensure_schema(self) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
-                CREATE TABLE IF NOT EXISTS visitor_registrations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    plate_number TEXT NOT NULL,
-                    company TEXT NOT NULL,
-                    phone TEXT NOT NULL,
-                    phone_lookup TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    entry_time TEXT NOT NULL,
-                    caller TEXT,
-                    call_sid TEXT
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    version INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
-            columns = {
-                row["name"]
-                for row in connection.execute(
-                    "PRAGMA table_info(visitor_registrations)"
-                ).fetchall()
-            }
-            if "phone_lookup" not in columns:
-                connection.execute(
-                    "ALTER TABLE visitor_registrations ADD COLUMN phone_lookup TEXT"
-                )
-                connection.execute(
-                    """
-                    UPDATE visitor_registrations
-                    SET phone_lookup = substr(
-                        replace(replace(replace(replace(phone, '+', ''), '-', ''), ' ', ''), '86', ''),
-                        -11
-                    )
-                    WHERE phone_lookup IS NULL OR phone_lookup = ''
-                    """
-                )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 0)"
+            )
             connection.commit()
+
+            current = connection.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()["version"]
+
+            if current < 1:
+                self._migrate_to_v1(connection)
+
+    def _migrate_to_v1(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visitor_registrations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plate_number TEXT NOT NULL,
+                company TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                phone_lookup TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                entry_time TEXT NOT NULL,
+                caller TEXT,
+                call_sid TEXT
+            )
+            """
+        )
+        try:
+            connection.execute(
+                "ALTER TABLE visitor_registrations ADD COLUMN phone_lookup TEXT"
+            )
+            connection.execute(
+                """
+                UPDATE visitor_registrations
+                SET phone_lookup = substr(
+                    replace(replace(replace(replace(phone, '+', ''), '-', ''), ' ', ''), '86', ''),
+                    -11
+                )
+                WHERE phone_lookup IS NULL OR phone_lookup = ''
+                """
+            )
+        except sqlite3.OperationalError:
+            pass  # phone_lookup already exists (fresh table or prior partial run)
+        connection.execute("UPDATE schema_version SET version = 1 WHERE id = 1")
+        connection.commit()
 
     @staticmethod
     def _row_to_registration(row: sqlite3.Row) -> VisitorRegistration:
@@ -137,7 +167,7 @@ class VisitorStore:
 
     @classmethod
     def _append_at_path(cls, path: str, registration: VisitorRegistration) -> None:
-        cls(path).append(registration)
+        cls.get(path).append(registration)
 
     def latest_by_phone(self, phone: str) -> VisitorRegistration | None:
         return self.latest_by_phone_or_plate(phone=phone)
@@ -407,4 +437,4 @@ class VisitorStore:
         phone: str,
         limit: int,
     ) -> list[VisitorRegistration]:
-        return cls(path).recent_by_phone(phone, limit=limit)
+        return cls.get(path).recent_by_phone(phone, limit=limit)
