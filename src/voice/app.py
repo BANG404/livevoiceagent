@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Coroutine
 
@@ -20,9 +20,11 @@ from voice.audio import (
     UtteranceBuffer,
     build_vad,
     mulaw_payload_to_pcm16,
-    pcm16_to_mulaw_payload,
 )
 from voice.speech import TextToSpeech, build_tts
+from voice.tts_pipeline import TextDeltaSegmenter, single_text_reply, stream_agent_reply
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Live Voice Visitor Agent")
 TRANSCRIPT_MERGE_GRACE_SECONDS = 0.6
@@ -91,7 +93,7 @@ async def twilio_media(websocket: WebSocket) -> None:
                 recent_visits = await _recent_visits_for_caller(metadata)
                 call_state.response_task = await _replace_response_task(
                     call_state.response_task,
-                    _stream_agent_reply(
+                    stream_agent_reply(
                         websocket,
                         stream_sid,
                         agent.stream_welcome_text(thread_id, metadata, recent_visits),
@@ -160,7 +162,7 @@ async def _handle_utterance(
     if not agent.uses_stt:
         call_state.response_task = await _replace_response_task(
             call_state.response_task,
-            _stream_agent_reply(
+            stream_agent_reply(
                 websocket,
                 stream_sid,
                 agent.stream_reply_from_audio(thread_id, pcm16, metadata),
@@ -182,17 +184,6 @@ async def _handle_utterance(
         )
     )
     call_state.stt_tasks.add(task)
-
-
-async def _stream_agent_reply(
-    websocket: WebSocket,
-    stream_sid: str,
-    text_stream: AsyncIterator[str],
-    tts: TextToSpeech,
-) -> None:
-    segmenter = TextDeltaSegmenter()
-    async for segment in _tts_segments(text_stream, tts, segmenter):
-        await _send_audio(websocket, stream_sid, segment)
 
 
 async def _recent_visits_for_caller(metadata: dict[str, str]) -> list[Any]:
@@ -279,6 +270,7 @@ async def _transcribe_utterance(
     except asyncio.CancelledError:
         raise
     except Exception:
+        logger.exception("STT failed")
         call_state.transcription_failed = True
     else:
         if transcript:
@@ -348,7 +340,7 @@ async def _flush_pending_reply(
         call_state.transcription_failed = False
         call_state.response_task = await _replace_response_task(
             call_state.response_task,
-            _stream_agent_reply(
+            stream_agent_reply(
                 websocket,
                 stream_sid,
                 agent.stream_reply_from_text(thread_id, merged_transcript, metadata),
@@ -361,10 +353,10 @@ async def _flush_pending_reply(
         call_state.transcription_failed = False
         call_state.response_task = await _replace_response_task(
             call_state.response_task,
-            _stream_agent_reply(
+            stream_agent_reply(
                 websocket,
                 stream_sid,
-                _single_text_reply("抱歉，刚才没听清，请再说一遍。"),
+                single_text_reply("抱歉，刚才没听清，请再说一遍。"),
                 tts,
             ),
         )
@@ -395,78 +387,3 @@ def _parse_custom_parameters(value: object) -> dict[str, str]:
     return {}
 
 
-async def _send_audio(websocket: WebSocket, stream_sid: str, pcm16: bytes) -> None:
-    if not stream_sid:
-        return
-
-    frame_size = 8000 * 2 // 50
-    for offset in range(0, len(pcm16), frame_size):
-        payload = pcm16_to_mulaw_payload(pcm16[offset : offset + frame_size])
-        await websocket.send_json(
-            {
-                "event": "media",
-                "streamSid": stream_sid,
-                "media": {"payload": payload},
-            }
-        )
-        await asyncio.sleep(0.02)
-
-
-async def _tts_segments(
-    text_stream: AsyncIterator[str],
-    tts: TextToSpeech,
-    segmenter: "TextDeltaSegmenter",
-) -> AsyncIterator[bytes]:
-    async for delta in text_stream:
-        for text in segmenter.push(delta):
-            async for pcm16 in tts.stream_pcm16(text):
-                yield pcm16
-
-    for text in segmenter.flush():
-        async for pcm16 in tts.stream_pcm16(text):
-            yield pcm16
-
-
-async def _single_text_reply(text: str) -> AsyncIterator[str]:
-    yield text
-
-
-class TextDeltaSegmenter:
-    def __init__(self, min_chars: int = 14, max_chars: int = 48) -> None:
-        self.min_chars = min_chars
-        self.max_chars = max_chars
-        self.buffer = ""
-
-    def push(self, delta: str) -> list[str]:
-        self.buffer += delta
-        ready: list[str] = []
-
-        while self.buffer:
-            split_at = self._split_index()
-            if split_at <= 0:
-                break
-            ready.append(self.buffer[:split_at].strip())
-            self.buffer = self.buffer[split_at:].lstrip()
-
-        return [item for item in ready if item]
-
-    def flush(self) -> list[str]:
-        text = self.buffer.strip()
-        self.buffer = ""
-        return [text] if text else []
-
-    def _split_index(self) -> int:
-        punctuation = "。！？!?；;，,"
-        for index, char in enumerate(self.buffer):
-            if char in punctuation and index + 1 >= self.min_chars:
-                return index + 1
-
-        if len(self.buffer) < self.max_chars:
-            return 0
-
-        for index in range(
-            min(len(self.buffer), self.max_chars) - 1, self.min_chars, -1
-        ):
-            if self.buffer[index].isspace():
-                return index + 1
-        return self.max_chars
