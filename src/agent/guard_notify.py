@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from agent.domain import VisitorRegistration
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 
 class GuardNotifier:
@@ -26,5 +31,9 @@ class WeComWebhookNotifier(GuardNotifier):
         }
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.post(self.webhook_url, json=payload)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                logger.error("WeChat webhook returned HTTP %s", exc.response.status_code)
+                return False
         return True
